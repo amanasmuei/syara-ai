@@ -167,8 +167,8 @@ func (c *SCCrawler) CrawlPage(ctx context.Context, pageURL, category, documentTy
 	// Extract text content
 	doc.Content = extractTextContent(string(body))
 
-	// Extract PDF links
-	doc.PDFLinks = extractPDFLinks(string(body), c.config.BaseURL)
+	// Extract PDF links (SC uses download.ashx pattern, not .pdf)
+	doc.PDFLinks = c.extractSCDocumentLinks(string(body))
 
 	// Extract publish date if available
 	doc.PublishedDate = extractPublishDate(string(body))
@@ -262,6 +262,73 @@ func (c *SCCrawler) DownloadAndStorePDF(ctx context.Context, pdfURL string) (str
 
 	c.log.Info("SC PDF stored successfully", "path", path)
 	return path, nil
+}
+
+// extractSCDocumentLinks extracts document download links from SC HTML.
+// SC Malaysia uses download.ashx?id=UUID pattern instead of .pdf extension.
+func (c *SCCrawler) extractSCDocumentLinks(html string) []string {
+	var links []string
+	seen := make(map[string]struct{})
+
+	// Pattern 1: Match download.ashx links (the primary SC download pattern)
+	// Example: https://www.sc.com.my/api/documentms/download.ashx?id=72b64b5c-313b-44dc-9841-36e0d50906ac
+	reDownload := regexp.MustCompile(`href=["']([^"']*download\.ashx[^"']*)["']`)
+	matches := reDownload.FindAllStringSubmatch(html, -1)
+
+	for _, match := range matches {
+		if len(match) > 1 {
+			link := match[1]
+			// Resolve relative URLs
+			if !strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://") {
+				link = c.resolveURL(link)
+			}
+			if _, exists := seen[link]; !exists {
+				seen[link] = struct{}{}
+				links = append(links, link)
+			}
+		}
+	}
+
+	// Pattern 2: Also look for standard .pdf links
+	rePDF := regexp.MustCompile(`(?i)href=["']([^"']*\.pdf)["']`)
+	pdfMatches := rePDF.FindAllStringSubmatch(html, -1)
+
+	for _, match := range pdfMatches {
+		if len(match) > 1 {
+			link := match[1]
+			if !strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://") {
+				link = c.resolveURL(link)
+			}
+			if _, exists := seen[link]; !exists {
+				seen[link] = struct{}{}
+				links = append(links, link)
+			}
+		}
+	}
+
+	// Pattern 3: Extract from embedded JSON data ($X.PPG object)
+	// Look for "Page Address" values that contain download.ashx
+	reJSON := regexp.MustCompile(`"Page Address"\s*:\s*"([^"]*download\.ashx[^"]*)"`)
+	jsonMatches := reJSON.FindAllStringSubmatch(html, -1)
+
+	for _, match := range jsonMatches {
+		if len(match) > 1 {
+			link := match[1]
+			// Unescape JSON string
+			link = strings.ReplaceAll(link, `\/`, `/`)
+			link = strings.ReplaceAll(link, `\u0026`, `&`)
+			if !strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://") {
+				link = c.resolveURL(link)
+			}
+			if _, exists := seen[link]; !exists {
+				seen[link] = struct{}{}
+				links = append(links, link)
+			}
+		}
+	}
+
+	c.log.Debug("extracted SC document links", "count", len(links))
+	return links
 }
 
 // extractActNumbers extracts act numbers from the HTML content.

@@ -107,87 +107,208 @@ func (c *IIFACrawler) Crawl(ctx context.Context) ([]CrawledDocument, error) {
 	defer c.completeState()
 
 	var allDocs []CrawledDocument
-	targets := c.GetTargetPages()
 
-	for _, target := range targets {
+	// Start with the first page of resolutions
+	baseURL := c.config.BaseURL + "/en/resolutions"
+	page := 1
+	maxPages := 50 // Safety limit
+
+	for page <= maxPages {
 		select {
 		case <-ctx.Done():
 			return allDocs, ctx.Err()
 		default:
 		}
 
-		c.log.Info("crawling IIFA target page", "url", target.URL, "category", target.Category)
-
-		docs, err := c.CrawlPage(ctx, target.URL, target.Category)
-		if err != nil {
-			c.log.WithError(err).Error("failed to crawl IIFA page", "url", target.URL)
-			c.incrementError()
-			continue
+		pageURL := baseURL
+		if page > 1 {
+			pageURL = fmt.Sprintf("%s/page/%d", baseURL, page)
 		}
 
-		allDocs = append(allDocs, docs...)
-		c.log.Info("crawled IIFA page successfully", "url", target.URL, "documents_found", len(docs))
+		c.log.Info("crawling IIFA resolutions page", "url", pageURL, "page", page)
+
+		// First, get the listing page to extract resolution links
+		resolutionLinks, hasNextPage, err := c.extractResolutionLinks(ctx, pageURL)
+		if err != nil {
+			c.log.WithError(err).Error("failed to extract resolution links", "url", pageURL)
+			c.incrementError()
+			break
+		}
+
+		if len(resolutionLinks) == 0 {
+			c.log.Info("no more resolutions found", "page", page)
+			break
+		}
+
+		// Crawl each individual resolution page
+		for _, link := range resolutionLinks {
+			select {
+			case <-ctx.Done():
+				return allDocs, ctx.Err()
+			default:
+			}
+
+			if c.isProcessed(link.URL) {
+				continue
+			}
+
+			doc, err := c.crawlResolutionPage(ctx, link)
+			if err != nil {
+				c.log.WithError(err).Warn("failed to crawl resolution", "url", link.URL)
+				c.incrementError()
+				continue
+			}
+
+			allDocs = append(allDocs, doc)
+			c.incrementSuccess()
+		}
+
+		c.log.Info("crawled IIFA page successfully", "page", page, "resolutions_found", len(resolutionLinks))
+
+		if !hasNextPage {
+			break
+		}
+		page++
 	}
 
 	return allDocs, nil
 }
 
-// CrawlPage crawls a single IIFA page and extracts documents.
-func (c *IIFACrawler) CrawlPage(ctx context.Context, pageURL, category string) ([]CrawledDocument, error) {
-	if c.isProcessed(pageURL) {
-		c.log.Debug("skipping already processed URL", "url", pageURL)
-		return nil, nil
-	}
+// ResolutionLink holds information about a resolution link.
+type ResolutionLink struct {
+	URL              string
+	Title            string
+	ResolutionNumber string
+}
 
+// extractResolutionLinks extracts resolution links from a listing page.
+func (c *IIFACrawler) extractResolutionLinks(ctx context.Context, pageURL string) ([]ResolutionLink, bool, error) {
 	// Rate limiting
 	if err := c.rateLimiter.Wait(ctx); err != nil {
-		return nil, fmt.Errorf("rate limiter error: %w", err)
+		return nil, false, fmt.Errorf("rate limiter error: %w", err)
 	}
 
-	// Fetch the page
 	body, err := c.fetchWithRetry(ctx, pageURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch page: %w", err)
+		return nil, false, fmt.Errorf("failed to fetch page: %w", err)
 	}
 
-	c.markProcessed(pageURL)
+	html := string(body)
+	var links []ResolutionLink
+	seen := make(map[string]struct{})
 
-	// Parse the HTML content
+	// Pattern to extract resolution links
+	// Example: href="https://iifa-aifi.org/en/56095.html">Resolution No. 267(12/26) Shari'ah Ruling...
+	reLink := regexp.MustCompile(`href="(https://iifa-aifi\.org/en/\d+\.html)"[^>]*>\s*Resolution\s+No\.?\s*(\d+)[^<]*([^<]+)`)
+	matches := reLink.FindAllStringSubmatch(html, -1)
+
+	for _, match := range matches {
+		if len(match) >= 4 {
+			url := match[1]
+			if _, exists := seen[url]; exists {
+				continue
+			}
+			seen[url] = struct{}{}
+
+			links = append(links, ResolutionLink{
+				URL:              url,
+				ResolutionNumber: match[2],
+				Title:            strings.TrimSpace("Resolution No. " + match[2] + " " + match[3]),
+			})
+		}
+	}
+
+	// Also try simpler pattern for just resolution URLs
+	reSimple := regexp.MustCompile(`href="(https://iifa-aifi\.org/en/(\d+)\.html)"`)
+	simpleMatches := reSimple.FindAllStringSubmatch(html, -1)
+
+	for _, match := range simpleMatches {
+		if len(match) >= 2 {
+			url := match[1]
+			if _, exists := seen[url]; exists {
+				continue
+			}
+			seen[url] = struct{}{}
+
+			links = append(links, ResolutionLink{
+				URL: url,
+			})
+		}
+	}
+
+	// Check if there's a next page
+	hasNextPage := strings.Contains(html, `href="/en/resolutions/page/`) ||
+		strings.Contains(html, `>Next<`) ||
+		strings.Contains(html, `class="next"`)
+
+	c.log.Debug("extracted resolution links", "count", len(links), "has_next", hasNextPage)
+	return links, hasNextPage, nil
+}
+
+// crawlResolutionPage crawls an individual resolution page.
+func (c *IIFACrawler) crawlResolutionPage(ctx context.Context, link ResolutionLink) (CrawledDocument, error) {
+	// Rate limiting
+	if err := c.rateLimiter.Wait(ctx); err != nil {
+		return CrawledDocument{}, fmt.Errorf("rate limiter error: %w", err)
+	}
+
+	body, err := c.fetchWithRetry(ctx, link.URL)
+	if err != nil {
+		return CrawledDocument{}, fmt.Errorf("failed to fetch resolution: %w", err)
+	}
+
+	c.markProcessed(link.URL)
+	html := string(body)
+
 	doc := CrawledDocument{
-		URL:         pageURL,
-		Category:    category,
-		HTMLContent: string(body),
+		URL:         link.URL,
+		Category:    "resolution",
+		HTMLContent: html,
 		CrawledAt:   time.Now().UTC(),
 		ContentHash: hashContent(body),
-		Metadata:    make(map[string]interface{}),
+		Metadata:    make(map[string]any),
 	}
 
-	// Extract title
-	doc.Title = extractTitle(string(body))
+	// Extract title from page
+	doc.Title = extractTitle(html)
+	if doc.Title == "" && link.Title != "" {
+		doc.Title = link.Title
+	}
 
-	// Extract text content
-	doc.Content = extractTextContent(string(body))
+	// Extract resolution number from title or link
+	resNum := link.ResolutionNumber
+	if resNum == "" {
+		resNum = ExtractResolutionNumber(doc.Title)
+	}
 
-	// Extract PDF links
-	doc.PDFLinks = extractPDFLinks(string(body), c.config.BaseURL)
+	// Extract text content (resolution text)
+	doc.Content = extractTextContent(html)
 
-	// Extract publish date if available
-	doc.PublishedDate = extractPublishDate(string(body))
+	// Extract publish date
+	doc.PublishedDate = extractPublishDate(html)
 
-	// Extract additional metadata specific to IIFA
+	// Set metadata
 	doc.Metadata["source"] = "IIFA"
 	doc.Metadata["document_type"] = "resolution"
+	doc.Metadata["resolution_number"] = resNum
 	doc.Metadata["crawled_at"] = doc.CrawledAt.Format(time.RFC3339)
-	doc.Metadata["page_url"] = pageURL
+	doc.Metadata["page_url"] = link.URL
 
-	// Extract resolution information
-	resolutions := c.extractResolutions(string(body))
-	if len(resolutions) > 0 {
-		doc.Metadata["resolutions"] = resolutions
+	// Extract any PDF links from the resolution page
+	doc.PDFLinks = extractPDFLinks(html, c.config.BaseURL)
+
+	c.log.Info("crawled resolution", "url", link.URL, "resolution", resNum)
+	return doc, nil
+}
+
+// CrawlPage crawls a single IIFA resolution page and extracts documents.
+func (c *IIFACrawler) CrawlPage(ctx context.Context, pageURL, category string) ([]CrawledDocument, error) {
+	link := ResolutionLink{URL: pageURL}
+	doc, err := c.crawlResolutionPage(ctx, link)
+	if err != nil {
+		return nil, err
 	}
-
-	c.incrementSuccess()
-
+	doc.Category = category
 	return []CrawledDocument{doc}, nil
 }
 
