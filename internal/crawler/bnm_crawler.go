@@ -16,6 +16,7 @@ import (
 
 	"github.com/alqutdigital/islamic-banking-agent/internal/storage"
 	"github.com/alqutdigital/islamic-banking-agent/pkg/logger"
+	"github.com/chromedp/chromedp"
 	"golang.org/x/time/rate"
 )
 
@@ -27,17 +28,19 @@ type BNMCrawlerConfig struct {
 	RequestTimeout time.Duration
 	MaxRetries     int
 	RetryDelay     time.Duration
+	UseBrowser     bool          // Use headless browser for JS-rendered pages
 }
 
 // DefaultBNMCrawlerConfig returns default crawler configuration.
 func DefaultBNMCrawlerConfig() BNMCrawlerConfig {
 	return BNMCrawlerConfig{
 		BaseURL:        "https://www.bnm.gov.my",
-		UserAgent:      "ShariaComply-Bot/1.0 (+https://sharia-comply.com/bot)",
+		UserAgent:      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		RateLimit:      1,
-		RequestTimeout: 30 * time.Second,
+		RequestTimeout: 60 * time.Second,
 		MaxRetries:     3,
 		RetryDelay:     2 * time.Second,
+		UseBrowser:     true, // Use headless browser to bypass Cloudflare
 	}
 }
 
@@ -111,9 +114,12 @@ type BNMTargetPage struct {
 // GetTargetPages returns the list of BNM pages to crawl.
 func (c *BNMCrawler) GetTargetPages() []BNMTargetPage {
 	return []BNMTargetPage{
-		{URL: c.config.BaseURL + "/regulations/policy-documents", Category: "policy-documents"},
-		{URL: c.config.BaseURL + "/circulars", Category: "circulars"},
-		{URL: c.config.BaseURL + "/islamic-banking", Category: "islamic-banking"},
+		{URL: c.config.BaseURL + "/banking-islamic-banking", Category: "policy-documents"},
+		{URL: c.config.BaseURL + "/insurance-takaful", Category: "insurance-takaful"},
+		{URL: c.config.BaseURL + "/development-financial-institutions", Category: "development-fi"},
+		{URL: c.config.BaseURL + "/money-services-business", Category: "money-services"},
+		{URL: c.config.BaseURL + "/intermediaries", Category: "intermediaries"},
+		{URL: c.config.BaseURL + "/payment-systems", Category: "payment-systems"},
 	}
 }
 
@@ -200,9 +206,9 @@ func (c *BNMCrawler) CrawlPage(ctx context.Context, pageURL, category string) ([
 	return []CrawledDocument{doc}, nil
 }
 
-// CrawlPolicyDocuments crawls the policy documents section.
+// CrawlPolicyDocuments crawls the policy documents section (Banking & Islamic Banking).
 func (c *BNMCrawler) CrawlPolicyDocuments(ctx context.Context) ([]CrawledDocument, error) {
-	pageURL := c.config.BaseURL + "/regulations/policy-documents"
+	pageURL := c.config.BaseURL + "/banking-islamic-banking"
 	return c.CrawlPage(ctx, pageURL, "policy-documents")
 }
 
@@ -266,6 +272,11 @@ func (c *BNMCrawler) DownloadAndStorePDF(ctx context.Context, pdfURL string) (st
 
 // fetchWithRetry fetches a URL with retry logic and exponential backoff.
 func (c *BNMCrawler) fetchWithRetry(ctx context.Context, targetURL string) ([]byte, error) {
+	// Use browser mode for BNM pages to bypass Cloudflare
+	if c.config.UseBrowser {
+		return c.fetchWithBrowserRetry(ctx, targetURL)
+	}
+
 	var lastErr error
 	delay := c.config.RetryDelay
 
@@ -292,6 +303,34 @@ func (c *BNMCrawler) fetchWithRetry(ctx context.Context, targetURL string) ([]by
 	return nil, fmt.Errorf("all retries failed: %w", lastErr)
 }
 
+// fetchWithBrowserRetry fetches using browser with retry logic.
+func (c *BNMCrawler) fetchWithBrowserRetry(ctx context.Context, targetURL string) ([]byte, error) {
+	var lastErr error
+	delay := c.config.RetryDelay
+
+	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			c.log.Debug("retrying browser request", "url", targetURL, "attempt", attempt, "delay", delay)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+			delay *= 2
+		}
+
+		body, err := c.fetchWithBrowser(ctx, targetURL)
+		if err == nil {
+			return body, nil
+		}
+
+		lastErr = err
+		c.log.WithError(err).Warn("browser request failed", "url", targetURL, "attempt", attempt)
+	}
+
+	return nil, fmt.Errorf("all browser retries failed: %w", lastErr)
+}
+
 // fetch performs a single HTTP GET request.
 func (c *BNMCrawler) fetch(ctx context.Context, targetURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
@@ -299,9 +338,18 @@ func (c *BNMCrawler) fetch(ctx context.Context, targetURL string) ([]byte, error
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// Set headers to mimic a real browser
 	req.Header.Set("User-Agent", c.config.UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Site", "none")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	req.Header.Set("Cache-Control", "max-age=0")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -319,6 +367,54 @@ func (c *BNMCrawler) fetch(ctx context.Context, targetURL string) ([]byte, error
 	}
 
 	return body, nil
+}
+
+// fetchWithBrowser uses chromedp headless browser to fetch JavaScript-rendered pages.
+func (c *BNMCrawler) fetchWithBrowser(ctx context.Context, targetURL string) ([]byte, error) {
+	c.log.Info("fetching with headless browser", "url", targetURL)
+
+	// Create a new browser context - use longer timeout for Cloudflare
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.UserAgent(c.config.UserAgent),
+	)
+
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
+	defer cancel()
+
+	browserCtx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+
+	// Set a longer timeout (90 seconds) for Cloudflare challenge
+	browserCtx, cancel = context.WithTimeout(browserCtx, 90*time.Second)
+	defer cancel()
+
+	var htmlContent string
+	err := chromedp.Run(browserCtx,
+		chromedp.Navigate(targetURL),
+		// Wait for page to be ready (wait for body to exist)
+		chromedp.WaitReady("body"),
+		// Sleep to allow Cloudflare challenge and JS rendering
+		chromedp.Sleep(5*time.Second),
+		// Try to wait for table but don't fail if not found
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			// Try waiting for table, but continue even if it fails
+			_ = chromedp.WaitVisible(`table.dataTable`, chromedp.ByQuery).Do(ctx)
+			return nil
+		}),
+		chromedp.Sleep(2*time.Second),
+		chromedp.OuterHTML("html", &htmlContent),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("browser fetch failed: %w", err)
+	}
+
+	c.log.Info("browser fetch successful", "url", targetURL, "content_length", len(htmlContent))
+	return []byte(htmlContent), nil
 }
 
 // resolveURL resolves a potentially relative URL to an absolute URL.
