@@ -90,10 +90,7 @@ func NewRouter(deps Dependencies, config RouterConfig) *chi.Mux {
 	// 4. Panic recovery
 	r.Use(middleware.Recoverer(logger))
 
-	// 5. Request timeout
-	r.Use(chimiddleware.Timeout(config.RequestTimeout))
-
-	// 6. CORS handling
+	// 5. CORS handling (moved before timeout to allow WebSocket upgrades)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   config.AllowedOrigins,
 		AllowedMethods:   config.AllowedMethods,
@@ -117,22 +114,24 @@ func NewRouter(deps Dependencies, config RouterConfig) *chi.Mux {
 	}
 
 	// ============================
-	// Health Check Routes (no rate limiting)
+	// Health Check Routes (no rate limiting, no timeout)
 	// ============================
 	r.Get("/health", handlers.HealthCheck())
 	r.Get("/ready", handlers.ReadyCheck(deps.DB, deps.ObjectStorage))
 
 	// ============================
-	// WebSocket Route
+	// WebSocket Route (no timeout - long-lived connection)
 	// ============================
 	if deps.WSHub != nil {
 		r.Get("/ws", deps.WSHub.HandleWebSocket)
 	}
 
 	// ============================
-	// API v1 Routes
+	// API v1 Routes (with timeout)
 	// ============================
 	r.Route("/api/v1", func(r chi.Router) {
+		// Apply timeout middleware only to API routes
+		r.Use(chimiddleware.Timeout(config.RequestTimeout))
 		// Chat endpoint with rate limiting
 		r.Route("/chat", func(r chi.Router) {
 			if rateLimiter != nil {

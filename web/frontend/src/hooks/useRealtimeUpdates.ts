@@ -72,13 +72,15 @@ export function useRealtimeUpdates(options: UseRealtimeUpdatesOptions = {}) {
     // Subscribe to topics
     webSocketService.subscribe(topics);
 
-    // Cleanup
+    // Cleanup - only unsubscribe handlers and topics, don't disconnect
+    // The WebSocket connection should persist across component remounts
     return () => {
       unsubMessage();
       unsubConnect();
       unsubDisconnect();
       webSocketService.unsubscribe(topics);
-      webSocketService.disconnect();
+      // Note: We don't disconnect here to avoid issues with React Strict Mode
+      // The connection will persist for the app lifetime
     };
   }, [enabled, topics, handleMessage]);
 

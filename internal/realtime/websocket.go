@@ -389,9 +389,11 @@ func (h *WSHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	h.logger.Debug("registering new client", "client_id", client.ID)
 	h.register <- client
 
 	// Start client goroutines
+	h.logger.Debug("starting client goroutines", "client_id", client.ID)
 	go client.writePump()
 	go client.readPump()
 
@@ -455,6 +457,7 @@ func (c *WSClient) Unsubscribe(topic string) {
 // readPump pumps messages from the WebSocket connection to the hub.
 func (c *WSClient) readPump() {
 	defer func() {
+		c.hub.logger.Debug("readPump exiting", "client_id", c.ID)
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
@@ -502,6 +505,7 @@ func (c *WSClient) readPump() {
 func (c *WSClient) writePump() {
 	ticker := time.NewTicker(c.hub.config.PingPeriod)
 	defer func() {
+		c.hub.logger.Debug("writePump exiting", "client_id", c.ID)
 		ticker.Stop()
 		c.conn.Close()
 	}()
