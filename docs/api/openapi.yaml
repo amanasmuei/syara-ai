@@ -1,0 +1,950 @@
+openapi: 3.0.3
+info:
+  title: ShariaComply AI API
+  description: |
+    ShariaComply AI is an intelligent compliance assistant for Islamic banking professionals.
+    It provides RAG (Retrieval-Augmented Generation) powered responses with citations from
+    BNM (Bank Negara Malaysia) regulations and AAOIFI Shariah Standards.
+
+    ## Features
+    - Chat with AI agent for Islamic banking compliance queries
+    - Search BNM regulations and policy documents
+    - Search AAOIFI Shariah Standards
+    - Compare standards across jurisdictions
+    - Visual citations with document highlights
+
+    ## Rate Limiting
+    API endpoints are rate-limited to ensure fair usage:
+    - Chat: 60 requests per minute
+    - Conversations: 120 requests per minute
+    - Documents: 100 requests per minute
+
+    Rate limit headers are included in responses:
+    - `X-RateLimit-Limit`: Maximum requests allowed
+    - `X-RateLimit-Remaining`: Remaining requests in window
+    - `X-RateLimit-Reset`: Unix timestamp when limit resets
+  version: 1.0.0
+  contact:
+    name: Alqut Digital
+    url: https://github.com/alqutdigital/islamic-banking-agent
+  license:
+    name: Proprietary
+    url: https://alqutdigital.com/license
+
+servers:
+  - url: http://localhost:8080
+    description: Development server
+  - url: https://api.shariacomply.ai
+    description: Production server
+
+tags:
+  - name: Health
+    description: Health and readiness checks
+  - name: Chat
+    description: AI chat operations
+  - name: Conversations
+    description: Conversation management
+  - name: Documents
+    description: Document access and downloads
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Returns the health status of the service. Always returns 200 if the service is running.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: healthy
+                service: islamic-banking-agent
+                version: 0.1.0
+                timestamp: "2024-01-15T10:30:00Z"
+
+  /ready:
+    get:
+      tags:
+        - Health
+      summary: Readiness check
+      description: |
+        Checks if all dependencies are ready. Used by orchestrators to determine
+        if the service can receive traffic.
+      operationId: readyCheck
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyStatus'
+              example:
+                status: ready
+                components:
+                  database: healthy
+                  object_storage: healthy
+                timestamp: "2024-01-15T10:30:00Z"
+        '503':
+          description: Service is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyStatus'
+              example:
+                status: not ready
+                components:
+                  database: healthy
+                  object_storage: "unhealthy: connection refused"
+                timestamp: "2024-01-15T10:30:00Z"
+
+  /api/v1/chat:
+    post:
+      tags:
+        - Chat
+      summary: Chat with the AI agent
+      description: |
+        Send a message to the ShariaComply AI agent and receive a response with citations.
+
+        The agent uses RAG (Retrieval-Augmented Generation) to search through:
+        - BNM (Bank Negara Malaysia) regulations
+        - AAOIFI Shariah Standards
+
+        Responses include source citations with document references, page numbers,
+        and relevance scores.
+      operationId: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+            examples:
+              simple:
+                summary: Simple question
+                value:
+                  message: "What are the requirements for Murabaha financing?"
+              with_conversation:
+                summary: Continue conversation
+                value:
+                  message: "How does this compare to AAOIFI standards?"
+                  conversation_id: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+              example:
+                answer: "Murabaha financing in Malaysia must comply with BNM's Policy Document on Murabaha..."
+                citations:
+                  - index: 1
+                    chunk_id: "550e8400-e29b-41d4-a716-446655440001"
+                    document_id: "550e8400-e29b-41d4-a716-446655440002"
+                    source: "bnm"
+                    title: "Policy Document on Murabaha"
+                    page: 5
+                    section: "3.1 Requirements"
+                    content: "The Islamic financial institution shall..."
+                    similarity: 0.89
+                metadata:
+                  conversation_id: "550e8400-e29b-41d4-a716-446655440000"
+                  sources_used: 3
+                  confidence: 0.92
+                  processing_time_ms: 1250
+                  tokens_used: 1500
+                  model_used: "claude-sonnet-4-20250514"
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: BAD_REQUEST
+                  message: Invalid request body
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Validation failed
+                  details:
+                    - field: message
+                      message: Message must not exceed 2000 characters
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/conversations:
+    get:
+      tags:
+        - Conversations
+      summary: List conversations
+      description: Retrieve a paginated list of conversations.
+      operationId: listConversations
+      parameters:
+        - name: limit
+          in: query
+          description: Number of results to return (max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          description: Offset for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationListResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      tags:
+        - Conversations
+      summary: Create a new conversation
+      description: Create a new conversation with an optional title.
+      operationId: createConversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+            example:
+              title: "Murabaha Compliance Discussion"
+      responses:
+        '201':
+          description: Conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/conversations/{id}:
+    get:
+      tags:
+        - Conversations
+      summary: Get a conversation
+      description: Retrieve a specific conversation with its messages.
+      operationId: getConversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Conversation UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationWithMessages'
+        '400':
+          description: Invalid conversation ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      tags:
+        - Conversations
+      summary: Update a conversation
+      description: Update conversation title, summary, or archive status.
+      operationId: updateConversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Conversation UUID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConversationRequest'
+            example:
+              title: "Updated Title"
+              is_archived: false
+      responses:
+        '200':
+          description: Conversation updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conversation'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Conversations
+      summary: Delete a conversation
+      description: Delete a conversation and all its messages.
+      operationId: deleteConversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Conversation UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Conversation deleted
+        '400':
+          description: Invalid conversation ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/conversations/{id}/messages:
+    get:
+      tags:
+        - Conversations
+      summary: Get conversation messages
+      description: Retrieve paginated messages for a conversation.
+      operationId: getConversationMessages
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Conversation UUID
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          description: Number of results to return (max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          description: Offset for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListResponse'
+        '400':
+          description: Invalid conversation ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/documents/{id}:
+    get:
+      tags:
+        - Documents
+      summary: Get document metadata
+      description: Retrieve metadata for a specific document.
+      operationId: getDocument
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Document UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '400':
+          description: Invalid document ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/documents/{id}/download:
+    get:
+      tags:
+        - Documents
+      summary: Download a document
+      description: |
+        Get a download URL for a document or its visual representations.
+
+        Download types:
+        - `original`: Original document (PDF/HTML)
+        - `page`: Specific page as image
+        - `highlighted`: Page with highlighted citation
+        - `thumbnail`: Thumbnail image of page
+      operationId: downloadDocument
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Document UUID
+          schema:
+            type: string
+            format: uuid
+        - name: type
+          in: query
+          description: Type of download
+          schema:
+            type: string
+            enum:
+              - original
+              - page
+              - highlighted
+              - thumbnail
+            default: original
+        - name: page
+          in: query
+          description: Page number (required for page/thumbnail types)
+          schema:
+            type: integer
+            minimum: 1
+        - name: chunk_id
+          in: query
+          description: Chunk ID (required for highlighted type)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '307':
+          description: Temporary redirect to signed download URL
+          headers:
+            Location:
+              description: Signed URL for download
+              schema:
+                type: string
+                format: uri
+        '400':
+          description: Bad request (missing required parameters)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document or file not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      required:
+        - status
+        - service
+        - version
+        - timestamp
+      properties:
+        status:
+          type: string
+          description: Health status
+          example: healthy
+        service:
+          type: string
+          description: Service name
+          example: islamic-banking-agent
+        version:
+          type: string
+          description: Service version
+          example: 0.1.0
+        timestamp:
+          type: string
+          format: date-time
+          description: Current timestamp
+
+    ReadyStatus:
+      type: object
+      required:
+        - status
+        - components
+        - timestamp
+      properties:
+        status:
+          type: string
+          description: Overall readiness status
+          enum:
+            - ready
+            - not ready
+        components:
+          type: object
+          additionalProperties:
+            type: string
+          description: Status of each component
+          example:
+            database: healthy
+            object_storage: healthy
+        timestamp:
+          type: string
+          format: date-time
+          description: Current timestamp
+
+    ChatRequest:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: The user's message (1-2000 characters)
+          minLength: 1
+          maxLength: 2000
+          example: "What are the requirements for Murabaha financing?"
+        conversation_id:
+          type: string
+          format: uuid
+          description: Optional conversation ID to continue an existing conversation
+
+    ChatResponse:
+      type: object
+      required:
+        - answer
+        - citations
+        - metadata
+      properties:
+        answer:
+          type: string
+          description: The AI agent's response
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Citation'
+          description: Source citations for the response
+        metadata:
+          $ref: '#/components/schemas/ResponseMetadata'
+
+    Citation:
+      type: object
+      required:
+        - index
+        - chunk_id
+        - document_id
+        - source
+        - title
+        - content
+      properties:
+        index:
+          type: integer
+          description: Citation index (1-based)
+        chunk_id:
+          type: string
+          format: uuid
+          description: ID of the text chunk
+        document_id:
+          type: string
+          format: uuid
+          description: ID of the source document
+        source:
+          type: string
+          description: Source type (bnm, aaoifi)
+          enum:
+            - bnm
+            - aaoifi
+            - other
+        title:
+          type: string
+          description: Document title
+        page:
+          type: integer
+          description: Page number in the document
+        section:
+          type: string
+          description: Section title
+        content:
+          type: string
+          description: Relevant content excerpt
+        similarity:
+          type: number
+          format: float
+          description: Similarity score (0-1)
+        thumbnail_url:
+          type: string
+          format: uri
+          description: URL to thumbnail image
+        download_url:
+          type: string
+          format: uri
+          description: URL to download highlighted page
+
+    ResponseMetadata:
+      type: object
+      required:
+        - conversation_id
+        - sources_used
+        - confidence
+        - processing_time_ms
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+          description: Conversation ID (created if not provided)
+        sources_used:
+          type: integer
+          description: Number of sources used in the response
+        confidence:
+          type: number
+          format: float
+          description: Confidence score (0-1)
+        processing_time_ms:
+          type: integer
+          format: int64
+          description: Processing time in milliseconds
+        tokens_used:
+          type: integer
+          description: Total tokens used
+        model_used:
+          type: string
+          description: LLM model used
+
+    Conversation:
+      type: object
+      required:
+        - id
+        - title
+        - is_archived
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        summary:
+          type: string
+        is_archived:
+          type: boolean
+        message_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ConversationWithMessages:
+      allOf:
+        - $ref: '#/components/schemas/Conversation'
+        - type: object
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: '#/components/schemas/Message'
+
+    ConversationListResponse:
+      type: object
+      required:
+        - conversations
+        - pagination
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Conversation'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    CreateConversationRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Conversation title (optional, defaults to "New Conversation")
+
+    UpdateConversationRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: New title
+        summary:
+          type: string
+          description: Conversation summary
+        is_archived:
+          type: boolean
+          description: Archive status
+
+    Message:
+      type: object
+      required:
+        - id
+        - conversation_id
+        - role
+        - content
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum:
+            - user
+            - assistant
+            - system
+        content:
+          type: string
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Citation'
+        tokens_used:
+          type: integer
+        model_used:
+          type: string
+        latency_ms:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    MessageListResponse:
+      type: object
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Document:
+      type: object
+      required:
+        - id
+        - source_type
+        - title
+        - language
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        source_type:
+          type: string
+          enum:
+            - bnm
+            - aaoifi
+            - other
+        title:
+          type: string
+        file_name:
+          type: string
+        file_path:
+          type: string
+        original_url:
+          type: string
+          format: uri
+        category:
+          type: string
+        standard_number:
+          type: string
+        effective_date:
+          type: string
+          format: date
+        total_pages:
+          type: integer
+        language:
+          type: string
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Pagination:
+      type: object
+      required:
+        - total
+        - limit
+        - offset
+        - has_more
+      properties:
+        total:
+          type: integer
+          description: Total number of items
+        limit:
+          type: integer
+          description: Number of items per page
+        offset:
+          type: integer
+          description: Current offset
+        has_more:
+          type: boolean
+          description: Whether more items exist
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/APIError'
+
+    APIError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Error code
+          enum:
+            - BAD_REQUEST
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - METHOD_NOT_ALLOWED
+            - CONFLICT
+            - VALIDATION_ERROR
+            - RATE_LIMIT_EXCEEDED
+            - INTERNAL_ERROR
+            - SERVICE_UNAVAILABLE
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          description: Additional error details
+          oneOf:
+            - type: object
+            - type: array
+              items:
+                $ref: '#/components/schemas/ValidationError'
+
+    ValidationError:
+      type: object
+      required:
+        - field
+        - message
+      properties:
+        field:
+          type: string
+          description: Field that failed validation
+        message:
+          type: string
+          description: Validation error message

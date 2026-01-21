@@ -1,0 +1,70 @@
+# Docker Compose Override Example
+# Copy this file to docker-compose.override.yml and customize as needed
+# This file is automatically merged with docker-compose.yml
+
+version: '3.8'
+
+services:
+  # Example: Expose PostgreSQL on a different port
+  # postgres:
+  #   ports:
+  #     - "5433:5432"
+
+  # Example: Add pgAdmin for database management
+  # pgadmin:
+  #   image: dpage/pgadmin4:latest
+  #   container_name: sharia-pgadmin
+  #   environment:
+  #     PGADMIN_DEFAULT_EMAIL: admin@local.dev
+  #     PGADMIN_DEFAULT_PASSWORD: admin
+  #   ports:
+  #     - "5050:80"
+  #   networks:
+  #     - sharia-network
+  #   depends_on:
+  #     - postgres
+
+  # Example: Add Redis Commander for Redis management
+  # redis-commander:
+  #   image: rediscommander/redis-commander:latest
+  #   container_name: sharia-redis-commander
+  #   environment:
+  #     REDIS_HOSTS: local:redis:6379
+  #   ports:
+  #     - "8081:8081"
+  #   networks:
+  #     - sharia-network
+  #   depends_on:
+  #     - redis
+
+  # Example: Run agent API in Docker
+  # agent:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile.agent
+  #   container_name: sharia-agent
+  #   environment:
+  #     - PORT=8080
+  #     - ENVIRONMENT=development
+  #     - DB_HOST=postgres
+  #     - DB_PORT=5432
+  #     - DB_USER=postgres
+  #     - DB_PASSWORD=devpassword
+  #     - DB_NAME=islamic_banking
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
+  #     - NATS_URL=nats://nats:4222
+  #     - STORAGE_ENDPOINT=minio:9000
+  #   ports:
+  #     - "8080:8080"
+  #   networks:
+  #     - sharia-network
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     nats:
+  #       condition: service_healthy
+  #     minio:
+  #       condition: service_healthy

@@ -1,0 +1,87 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Go
+*.test
+*.out
+go.work
+go.work.sum
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# Logs
+*.log
+logs/
+
+# Test coverage
+coverage.out
+coverage.html
+coverage/
+
+# Build artifacts
+build/
+
+# Node.js (for web/)
+node_modules/
+web/node_modules/
+web/dist/
+web/build/
+.npm
+.pnpm-store/
+
+# Docker
+.docker/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Secrets
+*.pem
+*.key
+credentials.json
+secrets.yaml
+
+# MinIO data
+minio-data/
+
+# Database
+*.db
+*.sqlite
+postgres-data/
+
+# Frontend specific
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+
+# Test artifacts
+test-results/
+playwright-report/
+
+# Debug
+debug/
+*.prof
