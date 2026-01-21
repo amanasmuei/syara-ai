@@ -10,11 +10,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/alqutdigital/islamic-banking-agent/internal/agent"
 	"github.com/alqutdigital/islamic-banking-agent/internal/api"
 	"github.com/alqutdigital/islamic-banking-agent/internal/api/handlers"
 	"github.com/alqutdigital/islamic-banking-agent/internal/api/middleware"
 	"github.com/alqutdigital/islamic-banking-agent/internal/config"
+	"github.com/alqutdigital/islamic-banking-agent/internal/embedder"
+	"github.com/alqutdigital/islamic-banking-agent/internal/rag"
 	"github.com/alqutdigital/islamic-banking-agent/internal/storage"
+	"github.com/alqutdigital/islamic-banking-agent/internal/tools"
 	"github.com/alqutdigital/islamic-banking-agent/pkg/logger"
 	"github.com/alqutdigital/islamic-banking-agent/pkg/shutdown"
 )
@@ -122,13 +126,29 @@ func run() error {
 	rateLimitStore := middleware.NewMemoryRateLimitStore()
 
 	// ============================
+	// Initialize Chat Service (AI Agent)
+	// ============================
+	var chatService handlers.ChatService
+	if cfg.LLM.AnthropicKey != "" {
+		chatService = initChatService(cfg, db, log)
+		if chatService != nil {
+			log.Info("chat service initialized",
+				"model", cfg.LLM.Model,
+				"provider", cfg.LLM.Provider,
+			)
+		}
+	} else {
+		log.Warn("chat service not initialized: ANTHROPIC_API_KEY not set")
+	}
+
+	// ============================
 	// Setup API Router
 	// ============================
 	deps := api.Dependencies{
 		Logger:         log.Logger,
 		DB:             newDatabaseAdapter(db),
 		ObjectStorage:  newStorageAdapter(objectStorage),
-		ChatService:    nil, // Chat service will be implemented separately
+		ChatService:    chatService,
 		RateLimitStore: rateLimitStore,
 	}
 
@@ -254,4 +274,176 @@ func (a *storageAdapter) GenerateSignedURL(ctx context.Context, path string, exp
 
 func (a *storageAdapter) Exists(ctx context.Context, path string) (bool, error) {
 	return a.storage.Exists(ctx, path)
+}
+
+// ============================
+// Chat Service Initialization
+// ============================
+
+// initChatService initializes the AI chat service with all dependencies.
+func initChatService(cfg *config.Config, db *storage.PostgresDB, log *logger.Logger) handlers.ChatService {
+	// Initialize embedder for RAG (requires OpenAI key)
+	var emb rag.Embedder
+	if cfg.LLM.OpenAIKey != "" {
+		embConfig := embedder.DefaultEmbedderConfig(cfg.LLM.OpenAIKey)
+		embConfig.Model = cfg.LLM.EmbeddingModel
+		var err error
+		emb, err = embedder.NewOpenAIEmbedder(embConfig, log)
+		if err != nil {
+			log.Warn("failed to initialize embedder", "error", err)
+		} else {
+			log.Info("embedder initialized", "model", embConfig.Model)
+		}
+	}
+
+	// Initialize retriever (requires database and embedder)
+	var retriever *rag.Retriever
+	if db != nil && emb != nil {
+		vectorStore := storage.NewPgVectorStore(db, log.Logger)
+		retrieverConfig := rag.DefaultRetrieverConfig()
+		retriever = rag.NewRetriever(vectorStore, emb, nil, log.Logger, retrieverConfig)
+		log.Info("RAG retriever initialized")
+	}
+
+	// Initialize tools registry
+	toolRegistry := tools.NewRegistry(log.Logger)
+
+	// Register available tools
+	if retriever != nil {
+		// BNM search tool
+		bnmTool := tools.NewSearchBNMTool(retriever)
+		if err := toolRegistry.Register(bnmTool); err != nil {
+			log.Warn("failed to register BNM tool", "error", err)
+		}
+
+		// AAOIFI search tool
+		aaoifiTool := tools.NewSearchAAOIFITool(retriever)
+		if err := toolRegistry.Register(aaoifiTool); err != nil {
+			log.Warn("failed to register AAOIFI tool", "error", err)
+		}
+
+		// Compare standards tool
+		compareTool := tools.NewCompareStandardsTool(retriever)
+		if err := toolRegistry.Register(compareTool); err != nil {
+			log.Warn("failed to register compare tool", "error", err)
+		}
+
+		// Latest circulars tool
+		circularsTool := tools.NewGetLatestCircularsTool(retriever)
+		if err := toolRegistry.Register(circularsTool); err != nil {
+			log.Warn("failed to register circulars tool", "error", err)
+		}
+	}
+
+	// Initialize orchestrator config
+	orchConfig := agent.DefaultOrchestratorConfig()
+	orchConfig.Model = cfg.LLM.Model
+	orchConfig.MaxTokens = cfg.LLM.MaxTokens
+	orchConfig.InitialRetrieval = retriever != nil
+
+	// Create orchestrator
+	orchestrator, err := agent.NewOrchestrator(
+		cfg.LLM.AnthropicKey,
+		retriever,
+		toolRegistry,
+		nil, // Memory can be added later
+		log.Logger,
+		orchConfig,
+	)
+	if err != nil {
+		log.Error("failed to create orchestrator", "error", err)
+		return nil
+	}
+
+	return newChatServiceAdapter(orchestrator)
+}
+
+// chatServiceAdapter adapts the agent.Orchestrator to the handlers.ChatService interface.
+type chatServiceAdapter struct {
+	orchestrator *agent.Orchestrator
+}
+
+func newChatServiceAdapter(orchestrator *agent.Orchestrator) handlers.ChatService {
+	if orchestrator == nil {
+		return nil
+	}
+	return &chatServiceAdapter{orchestrator: orchestrator}
+}
+
+// Process implements handlers.ChatService.
+func (a *chatServiceAdapter) Process(ctx context.Context, req handlers.ChatRequest) (*handlers.ChatResult, error) {
+	// Parse conversation ID if provided
+	var convID uuid.UUID
+	if req.ConversationID != "" {
+		var err error
+		convID, err = uuid.Parse(req.ConversationID)
+		if err != nil {
+			convID = uuid.New()
+		}
+	} else {
+		convID = uuid.New()
+	}
+
+	// Call the orchestrator
+	resp, err := a.orchestrator.Process(ctx, agent.AgentRequest{
+		ConversationID: convID,
+		UserMessage:    req.Message,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert citations
+	citations := make([]handlers.Citation, len(resp.Citations))
+	for i, c := range resp.Citations {
+		citations[i] = handlers.Citation{
+			Index:      c.Index,
+			ChunkID:    c.ChunkID,
+			DocumentID: c.DocumentID,
+			Source:     c.Source,
+			Title:      c.Title,
+			Page:       c.Page,
+			Section:    c.Section,
+			Content:    c.Content,
+			Similarity: c.Similarity,
+		}
+	}
+
+	return &handlers.ChatResult{
+		ConversationID: resp.ConversationID.String(),
+		Answer:         resp.Answer,
+		Citations:      citations,
+		Confidence:     calculateConfidence(resp),
+		TokensUsed:     resp.TokensUsed.TotalTokens,
+		ModelUsed:      resp.Model,
+	}, nil
+}
+
+// calculateConfidence estimates a confidence score based on response characteristics.
+func calculateConfidence(resp *agent.AgentResponse) float64 {
+	if resp == nil {
+		return 0
+	}
+
+	confidence := 0.5 // Base confidence
+
+	// Higher confidence if we have citations
+	if len(resp.Citations) > 0 {
+		confidence += 0.2
+	}
+	if len(resp.Citations) >= 3 {
+		confidence += 0.1
+	}
+
+	// Higher confidence if tools were used
+	if len(resp.ToolCalls) > 0 {
+		confidence += 0.1
+	}
+
+	// Cap at 0.95
+	if confidence > 0.95 {
+		confidence = 0.95
+	}
+
+	return confidence
 }
