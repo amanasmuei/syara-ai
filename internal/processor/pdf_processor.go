@@ -13,7 +13,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/alqutdigital/islamic-banking-agent/internal/storage"
@@ -191,56 +190,32 @@ func (p *PDFProcessor) ProcessPDFBytes(ctx context.Context, data []byte, metadat
 	return p.ProcessPDF(ctx, tmpFile.Name(), metadata)
 }
 
-// processPages processes all pages of the PDF.
+// processPages processes all pages of the PDF sequentially.
+// Note: Sequential processing is used because the fitz library may not be thread-safe
+// for concurrent page access on the same document.
 func (p *PDFProcessor) processPages(ctx context.Context, doc *fitz.Document, metadata DocumentMetadata) ([]ProcessedPage, error) {
 	totalPages := doc.NumPage()
-	pages := make([]ProcessedPage, totalPages)
-
-	// Create worker pool
-	type pageResult struct {
-		index int
-		page  ProcessedPage
-		err   error
+	if totalPages == 0 {
+		return nil, nil
 	}
 
-	results := make(chan pageResult, totalPages)
-	sem := make(chan struct{}, p.config.MaxConcurrency)
+	pages := make([]ProcessedPage, totalPages)
+	var errs []error
 
-	var wg sync.WaitGroup
 	for i := 0; i < totalPages; i++ {
+		// Check context before processing each page
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
 
-		wg.Add(1)
-		go func(pageIdx int) {
-			defer wg.Done()
-
-			// Acquire semaphore
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			page, err := p.processPage(ctx, doc, pageIdx, metadata)
-			results <- pageResult{index: pageIdx, page: page, err: err}
-		}(i)
-	}
-
-	// Wait for all pages to complete
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect results
-	var errs []error
-	for result := range results {
-		if result.err != nil {
-			errs = append(errs, fmt.Errorf("page %d: %w", result.index+1, result.err))
+		page, err := p.processPage(ctx, doc, i, metadata)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("page %d: %w", i+1, err))
 			continue
 		}
-		pages[result.index] = result.page
+		pages[i] = page
 	}
 
 	if len(errs) > 0 {
