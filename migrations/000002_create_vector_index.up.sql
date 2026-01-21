@@ -5,13 +5,13 @@
 -- Create IVFFlat index for cosine similarity search
 -- lists = 100 is good for datasets up to ~100k vectors
 -- Increase lists for larger datasets (sqrt(n) is a good rule of thumb)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_embedding
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding
 ON chunks USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 
 -- Alternative: HNSW index for better accuracy (comment out IVFFlat if using this)
 -- HNSW is slower to build but provides better recall
--- CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_embedding_hnsw
+-- CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
 -- ON chunks USING hnsw (embedding vector_cosine_ops)
 -- WITH (m = 16, ef_construction = 64);
 
