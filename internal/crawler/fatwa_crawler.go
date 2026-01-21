@@ -209,10 +209,20 @@ func NewFatwaCrawler(cfg FatwaCrawlerConfig, store storage.ObjectStorage, log *l
 		log = logger.Default()
 	}
 
+	// Create transport with connection management to prevent deadlocks
+	transport := &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     30 * time.Second,
+		DisableKeepAlives:   true, // Disable keep-alives to prevent connection reuse issues
+		ForceAttemptHTTP2:   false,
+	}
+
 	return &FatwaCrawler{
 		config: cfg,
 		httpClient: &http.Client{
-			Timeout: cfg.RequestTimeout,
+			Timeout:   cfg.RequestTimeout,
+			Transport: transport,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("too many redirects")
