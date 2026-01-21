@@ -19,6 +19,7 @@ import (
 	"github.com/alqutdigital/islamic-banking-agent/internal/embedder"
 	"github.com/alqutdigital/islamic-banking-agent/internal/llm"
 	"github.com/alqutdigital/islamic-banking-agent/internal/rag"
+	"github.com/alqutdigital/islamic-banking-agent/internal/realtime"
 	"github.com/alqutdigital/islamic-banking-agent/internal/storage"
 	"github.com/alqutdigital/islamic-banking-agent/internal/tools"
 	"github.com/alqutdigital/islamic-banking-agent/pkg/logger"
@@ -121,6 +122,56 @@ func run() error {
 	}
 
 	// ============================
+	// Initialize NATS Client
+	// ============================
+	var natsClient *realtime.NATSClient
+	var wsHub *realtime.WSHub
+	if cfg.NATS.URL != "" {
+		natsConfig := realtime.NATSConfig{
+			URL:       cfg.NATS.URL,
+			ClusterID: cfg.NATS.ClusterID,
+		}
+
+		var natsErr error
+		natsClient, natsErr = realtime.NewNATSClient(natsConfig, log.Logger)
+		if natsErr != nil {
+			log.Warn("failed to connect to NATS, real-time features disabled", "error", natsErr)
+		} else {
+			log.Info("connected to NATS", "url", cfg.NATS.URL)
+
+			// Setup JetStream streams
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := natsClient.SetupStreams(ctx); err != nil {
+				log.Warn("failed to setup NATS streams", "error", err)
+			} else {
+				log.Info("NATS JetStream streams initialized")
+			}
+			cancel()
+
+			shutdownHandler.RegisterNamed("nats", func(ctx context.Context) error {
+				return natsClient.Close()
+			})
+
+			// Initialize WebSocket Hub
+			wsConfig := realtime.DefaultWSConfig()
+			wsHub = realtime.NewWSHub(natsClient, wsConfig, log.Logger)
+
+			// Start the WebSocket hub
+			if err := wsHub.Start(context.Background()); err != nil {
+				log.Warn("failed to start WebSocket hub", "error", err)
+				wsHub = nil
+			} else {
+				log.Info("WebSocket hub started")
+				shutdownHandler.RegisterNamed("websocket-hub", func(ctx context.Context) error {
+					return wsHub.Stop(ctx)
+				})
+			}
+		}
+	} else {
+		log.Warn("NATS not configured, real-time features disabled")
+	}
+
+	// ============================
 	// Initialize Rate Limit Store
 	// ============================
 	// Using in-memory store by default
@@ -152,6 +203,7 @@ func run() error {
 		ObjectStorage:  newStorageAdapter(objectStorage),
 		ChatService:    chatService,
 		RateLimitStore: rateLimitStore,
+		WSHub:          wsHub,
 	}
 
 	routerConfig := api.DefaultRouterConfig()

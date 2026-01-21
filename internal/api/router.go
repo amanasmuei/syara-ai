@@ -56,6 +56,12 @@ type Dependencies struct {
 	ObjectStorage   handlers.ObjectStorage
 	ChatService     handlers.ChatService
 	RateLimitStore  middleware.RateLimitStore
+	WSHub           WSHub
+}
+
+// WSHub defines the interface for WebSocket hub operations.
+type WSHub interface {
+	HandleWebSocket(w http.ResponseWriter, r *http.Request)
 }
 
 // NewRouter creates and configures a new Chi router with all middleware and routes.
@@ -115,6 +121,13 @@ func NewRouter(deps Dependencies, config RouterConfig) *chi.Mux {
 	// ============================
 	r.Get("/health", handlers.HealthCheck())
 	r.Get("/ready", handlers.ReadyCheck(deps.DB, deps.ObjectStorage))
+
+	// ============================
+	// WebSocket Route
+	// ============================
+	if deps.WSHub != nil {
+		r.Get("/ws", deps.WSHub.HandleWebSocket)
+	}
 
 	// ============================
 	// API v1 Routes

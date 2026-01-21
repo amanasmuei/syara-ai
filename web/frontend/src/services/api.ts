@@ -109,8 +109,8 @@ export const chatApi = {
   },
 
   listConversations: async (): Promise<Conversation[]> => {
-    const response = await api.get<Conversation[]>('/conversations');
-    return response.data;
+    const response = await api.get<{ conversations: Conversation[] }>('/conversations');
+    return response.data.conversations || [];
   },
 
   deleteConversation: async (id: string): Promise<void> => {

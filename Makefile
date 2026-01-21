@@ -1,5 +1,11 @@
 .PHONY: all build test lint clean run-agent run-crawler run-worker docker-up docker-down migrate help
 
+# Load environment variables from .env file
+ifneq (,$(wildcard ./.env))
+    include .env
+    export
+endif
+
 # Go parameters
 GOCMD=go
 GOBUILD=$(GOCMD) build
