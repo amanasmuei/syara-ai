@@ -471,6 +471,11 @@ func (o *IngestionOrchestrator) IngestSource(ctx context.Context, opts *IngestOp
 
 // ingestBNM ingests documents from BNM website.
 func (o *IngestionOrchestrator) ingestBNM(ctx context.Context, opts *IngestOptions) error {
+	// Check if we should use the interactive policy document crawler
+	if opts.Category == "policy-documents" || opts.Category == "policy" {
+		return o.ingestBNMPolicyDocuments(ctx, opts)
+	}
+
 	o.log.Info("crawling BNM website")
 
 	// Crawl BNM pages
@@ -519,6 +524,79 @@ func (o *IngestionOrchestrator) ingestBNM(ctx context.Context, opts *IngestOptio
 				o.log.WithError(err).Error("failed to process HTML content", "url", doc.URL)
 				atomic.AddInt64(&o.stats.Errors, 1)
 			}
+		}
+
+		atomic.AddInt64(&o.stats.DocumentsProcessed, 1)
+		bar.Add(1)
+	}
+
+	o.printStats()
+	return nil
+}
+
+// ingestBNMPolicyDocuments uses the interactive crawler to get policy documents.
+// This method clicks the "Policy Document" filter checkbox, waits for AJAX update,
+// and paginates through all results to extract document information.
+func (o *IngestionOrchestrator) ingestBNMPolicyDocuments(ctx context.Context, opts *IngestOptions) error {
+	o.log.Info("crawling BNM policy documents with filter interaction")
+
+	// Use the new interactive crawler
+	policyDocs, err := o.crawler.CrawlPolicyDocumentsWithFilter(ctx)
+	if err != nil {
+		return fmt.Errorf("policy documents crawl failed: %w", err)
+	}
+
+	atomic.AddInt64(&o.stats.DocumentsFound, int64(len(policyDocs)))
+	o.log.Info("found policy documents", "count", len(policyDocs))
+
+	if len(policyDocs) == 0 {
+		o.log.Warn("no policy documents found")
+		return nil
+	}
+
+	// Create progress bar
+	bar := progressbar.NewOptions(len(policyDocs),
+		progressbar.OptionSetDescription("Downloading & processing policy documents"),
+		progressbar.OptionShowCount(),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "=",
+			SaucerHead:    ">",
+			SaucerPadding: " ",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
+
+	// Process each policy document
+	for _, doc := range policyDocs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if doc.PDFLink == "" {
+			o.log.Warn("no PDF link for document", "title", doc.Title)
+			bar.Add(1)
+			continue
+		}
+
+		o.log.Info("processing policy document",
+			"title", doc.Title,
+			"date", doc.Date,
+			"type", doc.Type,
+			"url", doc.PDFLink,
+		)
+
+		// Download and process the PDF
+		if err := o.processPDFFromURLWithSource(ctx, doc.PDFLink, "policy-documents", "bnm", opts); err != nil {
+			o.log.WithError(err).Error("failed to process policy document PDF",
+				"title", doc.Title,
+				"url", doc.PDFLink,
+			)
+			atomic.AddInt64(&o.stats.Errors, 1)
+		} else {
+			atomic.AddInt64(&o.stats.PDFsDownloaded, 1)
 		}
 
 		atomic.AddInt64(&o.stats.DocumentsProcessed, 1)

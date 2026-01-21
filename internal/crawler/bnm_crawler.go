@@ -206,10 +206,269 @@ func (c *BNMCrawler) CrawlPage(ctx context.Context, pageURL, category string) ([
 	return []CrawledDocument{doc}, nil
 }
 
+// PolicyDocument represents a policy document from the BNM table.
+type PolicyDocument struct {
+	Date     string `json:"date"`
+	Title    string `json:"title"`
+	Type     string `json:"type"`
+	PDFLink  string `json:"pdf_link"`
+	PageURL  string `json:"page_url"`
+}
+
 // CrawlPolicyDocuments crawls the policy documents section (Banking & Islamic Banking).
 func (c *BNMCrawler) CrawlPolicyDocuments(ctx context.Context) ([]CrawledDocument, error) {
 	pageURL := c.config.BaseURL + "/banking-islamic-banking"
 	return c.CrawlPage(ctx, pageURL, "policy-documents")
+}
+
+// CrawlPolicyDocumentsWithFilter crawls BNM policy documents by clicking the Policy Document filter.
+// This method interacts with the page to:
+// 1. Click the "Policy Document" checkbox filter
+// 2. Wait for the table to update
+// 3. Set entries to show maximum (100)
+// 4. Paginate through all results
+// 5. Extract document information from each row
+func (c *BNMCrawler) CrawlPolicyDocumentsWithFilter(ctx context.Context) ([]PolicyDocument, error) {
+	c.initState("bnm-policy")
+	defer c.completeState()
+
+	pageURL := c.config.BaseURL + "/banking-islamic-banking"
+	c.log.Info("crawling policy documents with filter", "url", pageURL)
+
+	// Create browser context with longer timeout for interactive crawling
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.UserAgent(c.config.UserAgent),
+		chromedp.WindowSize(1920, 1080),
+	)
+
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
+	defer cancel()
+
+	browserCtx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+
+	// Set a long timeout for the entire operation
+	browserCtx, cancel = context.WithTimeout(browserCtx, 5*time.Minute)
+	defer cancel()
+
+	var allDocuments []PolicyDocument
+
+	err := chromedp.Run(browserCtx,
+		// Navigate to the page
+		chromedp.Navigate(pageURL),
+		chromedp.WaitReady("body"),
+		// Wait for Cloudflare and initial page load
+		chromedp.Sleep(5*time.Second),
+		// Wait for the DataTable to be visible
+		chromedp.WaitVisible(`table.dataTable`, chromedp.ByQuery),
+		chromedp.Sleep(2*time.Second),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load page: %w", err)
+	}
+
+	c.log.Info("page loaded, clicking Policy Document filter")
+
+	// Click the Policy Document checkbox
+	err = chromedp.Run(browserCtx,
+		// Find and click the Policy Document checkbox
+		// The checkbox is in the TYPE OF DOCUMENT filter section
+		chromedp.Click(`input[type="checkbox"][value="Policy Document"]`, chromedp.ByQuery),
+		chromedp.Sleep(3*time.Second),
+	)
+	if err != nil {
+		// Try alternative selector
+		c.log.Warn("primary checkbox selector failed, trying alternative", "error", err)
+		err = chromedp.Run(browserCtx,
+			chromedp.Click(`//label[contains(text(),"Policy Document")]/input`, chromedp.BySearch),
+			chromedp.Sleep(3*time.Second),
+		)
+		if err != nil {
+			// Try clicking the label text
+			err = chromedp.Run(browserCtx,
+				chromedp.Click(`//label[contains(text(),"Policy Document")]`, chromedp.BySearch),
+				chromedp.Sleep(3*time.Second),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to click Policy Document filter: %w", err)
+			}
+		}
+	}
+
+	c.log.Info("filter clicked, waiting for table update")
+
+	// Wait for table to update after filter
+	err = chromedp.Run(browserCtx,
+		chromedp.WaitVisible(`table.dataTable tbody tr`, chromedp.ByQuery),
+		chromedp.Sleep(2*time.Second),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to wait for table update: %w", err)
+	}
+
+	// Change entries dropdown to show maximum (100)
+	c.log.Info("setting entries to maximum")
+	err = chromedp.Run(browserCtx,
+		// Select maximum entries from dropdown
+		chromedp.SetValue(`select[name$="_length"]`, "100", chromedp.ByQuery),
+		chromedp.Sleep(3*time.Second),
+	)
+	if err != nil {
+		c.log.Warn("failed to set entries to 100, continuing with default", "error", err)
+	}
+
+	// Now extract documents with pagination
+	for pageNum := 1; ; pageNum++ {
+		c.log.Info("extracting documents from page", "page", pageNum)
+
+		// Extract documents from current page
+		docs, err := c.extractTableDocuments(browserCtx, pageURL)
+		if err != nil {
+			c.log.WithError(err).Error("failed to extract documents from page", "page", pageNum)
+			break
+		}
+
+		if len(docs) == 0 {
+			c.log.Info("no documents found on page, stopping pagination", "page", pageNum)
+			break
+		}
+
+		allDocuments = append(allDocuments, docs...)
+		c.log.Info("extracted documents from page", "page", pageNum, "count", len(docs))
+
+		// Check if there's a next page
+		var hasNextPage bool
+		var nextDisabled bool
+		err = chromedp.Run(browserCtx,
+			chromedp.Evaluate(`document.querySelector('.paginate_button.next') !== null`, &hasNextPage),
+			chromedp.Evaluate(`document.querySelector('.paginate_button.next.disabled') !== null`, &nextDisabled),
+		)
+		if err != nil || !hasNextPage || nextDisabled {
+			c.log.Info("no more pages available", "page", pageNum)
+			break
+		}
+
+		// Click next page
+		err = chromedp.Run(browserCtx,
+			chromedp.Click(`.paginate_button.next`, chromedp.ByQuery),
+			chromedp.Sleep(2*time.Second),
+		)
+		if err != nil {
+			c.log.WithError(err).Warn("failed to click next page", "page", pageNum)
+			break
+		}
+	}
+
+	c.log.Info("policy documents crawl complete", "total_documents", len(allDocuments))
+	return allDocuments, nil
+}
+
+// extractTableDocuments extracts document information from the current table page.
+func (c *BNMCrawler) extractTableDocuments(ctx context.Context, pageURL string) ([]PolicyDocument, error) {
+	var documents []PolicyDocument
+
+	// JavaScript to extract table data
+	var tableData []map[string]string
+	err := chromedp.Run(ctx,
+		chromedp.Evaluate(`
+			(function() {
+				var rows = document.querySelectorAll('table.dataTable tbody tr');
+				var data = [];
+				rows.forEach(function(row) {
+					var cells = row.querySelectorAll('td');
+					if (cells.length >= 3) {
+						var dateCell = cells[0];
+						var titleCell = cells[1];
+						var typeCell = cells[2];
+
+						// Get the PDF link from the title cell
+						var linkElement = titleCell.querySelector('a');
+						var pdfLink = linkElement ? linkElement.getAttribute('href') : '';
+						var title = linkElement ? linkElement.textContent.trim() : titleCell.textContent.trim();
+
+						// Get type badge text
+						var typeBadge = typeCell.querySelector('.badge, span');
+						var docType = typeBadge ? typeBadge.textContent.trim() : typeCell.textContent.trim();
+
+						data.push({
+							date: dateCell.textContent.trim(),
+							title: title,
+							type: docType,
+							pdfLink: pdfLink
+						});
+					}
+				});
+				return data;
+			})()
+		`, &tableData),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract table data: %w", err)
+	}
+
+	for _, row := range tableData {
+		doc := PolicyDocument{
+			Date:    row["date"],
+			Title:   row["title"],
+			Type:    row["type"],
+			PDFLink: c.resolveURL(row["pdfLink"]),
+			PageURL: pageURL,
+		}
+		documents = append(documents, doc)
+	}
+
+	return documents, nil
+}
+
+// DownloadAllPolicyDocuments downloads all PDFs from the crawled policy documents.
+func (c *BNMCrawler) DownloadAllPolicyDocuments(ctx context.Context, documents []PolicyDocument) ([]string, error) {
+	var downloadedPaths []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Limit concurrent downloads
+	semaphore := make(chan struct{}, 3)
+
+	for _, doc := range documents {
+		if doc.PDFLink == "" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(d PolicyDocument) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			// Rate limiting
+			if err := c.rateLimiter.Wait(ctx); err != nil {
+				c.log.WithError(err).Error("rate limiter error", "url", d.PDFLink)
+				return
+			}
+
+			path, err := c.DownloadAndStorePDF(ctx, d.PDFLink)
+			if err != nil {
+				c.log.WithError(err).Error("failed to download PDF", "url", d.PDFLink, "title", d.Title)
+				c.incrementError()
+				return
+			}
+
+			mu.Lock()
+			downloadedPaths = append(downloadedPaths, path)
+			mu.Unlock()
+
+			c.incrementSuccess()
+			c.log.Info("downloaded PDF", "title", d.Title, "path", path)
+		}(doc)
+	}
+
+	wg.Wait()
+	return downloadedPaths, nil
 }
 
 // CrawlCirculars crawls the circulars section.
