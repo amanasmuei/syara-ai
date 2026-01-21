@@ -79,6 +79,22 @@ type LLMConfig struct {
 // CrawlerConfig holds crawler configuration.
 type CrawlerConfig struct {
 	BNMBaseURL       string
+	SCBaseURL        string // Securities Commission Malaysia
+	IIFABaseURL      string // International Islamic Fiqh Academy
+	FatwaSelangorURL string // State Fatwa URLs
+	FatwaJohorURL    string
+	FatwaPenangURL   string
+	FatwaFederalURL  string
+	FatwaPerakURL    string
+	FatwaKedahURL    string
+	FatwaKelantanURL string
+	FatwaTerengganuURL string
+	FatwaPahangURL   string
+	FatwaNSembilanURL string
+	FatwaMelakaURL   string
+	FatwaPerlisURL   string
+	FatwaSabahURL    string
+	FatwaSarawakURL  string
 	RateLimit        int
 	UserAgent        string
 	MaxConcurrency   int
@@ -142,12 +158,28 @@ func Load() (*Config, error) {
 			Temperature:       getEnvAsFloat("LLM_TEMPERATURE", 0.3),
 		},
 		Crawler: CrawlerConfig{
-			BNMBaseURL:     getEnv("BNM_BASE_URL", "https://www.bnm.gov.my"),
-			RateLimit:      getEnvAsInt("CRAWLER_RATE_LIMIT", 2),
-			UserAgent:      getEnv("CRAWLER_USER_AGENT", "ShariaComply-Bot/1.0"),
-			MaxConcurrency: getEnvAsInt("CRAWLER_MAX_CONCURRENCY", 5),
-			ChunkSize:      getEnvAsInt("CHUNK_SIZE", 512),
-			ChunkOverlap:   getEnvAsInt("CHUNK_OVERLAP", 50),
+			BNMBaseURL:         getEnv("BNM_BASE_URL", "https://www.bnm.gov.my"),
+			SCBaseURL:          getEnv("SC_BASE_URL", "https://www.sc.com.my"),
+			IIFABaseURL:        getEnv("IIFA_BASE_URL", "https://iifa-aifi.org"),
+			FatwaSelangorURL:   getEnv("FATWA_SELANGOR_URL", ""),
+			FatwaJohorURL:      getEnv("FATWA_JOHOR_URL", ""),
+			FatwaPenangURL:     getEnv("FATWA_PENANG_URL", ""),
+			FatwaFederalURL:    getEnv("FATWA_FEDERAL_URL", ""),
+			FatwaPerakURL:      getEnv("FATWA_PERAK_URL", ""),
+			FatwaKedahURL:      getEnv("FATWA_KEDAH_URL", ""),
+			FatwaKelantanURL:   getEnv("FATWA_KELANTAN_URL", ""),
+			FatwaTerengganuURL: getEnv("FATWA_TERENGGANU_URL", ""),
+			FatwaPahangURL:     getEnv("FATWA_PAHANG_URL", ""),
+			FatwaNSembilanURL:  getEnv("FATWA_NSEMBILAN_URL", ""),
+			FatwaMelakaURL:     getEnv("FATWA_MELAKA_URL", ""),
+			FatwaPerlisURL:     getEnv("FATWA_PERLIS_URL", ""),
+			FatwaSabahURL:      getEnv("FATWA_SABAH_URL", ""),
+			FatwaSarawakURL:    getEnv("FATWA_SARAWAK_URL", ""),
+			RateLimit:          getEnvAsInt("CRAWLER_RATE_LIMIT", 2),
+			UserAgent:          getEnv("CRAWLER_USER_AGENT", "ShariaComply-Bot/1.0"),
+			MaxConcurrency:     getEnvAsInt("CRAWLER_MAX_CONCURRENCY", 5),
+			ChunkSize:          getEnvAsInt("CHUNK_SIZE", 512),
+			ChunkOverlap:       getEnvAsInt("CHUNK_OVERLAP", 50),
 		},
 		Log: LogConfig{
 			Level:     getEnv("LOG_LEVEL", "info"),

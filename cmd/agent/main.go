@@ -437,6 +437,24 @@ func initChatService(cfg *config.Config, db *storage.PostgresDB, log *logger.Log
 		if err := toolRegistry.Register(circularsTool); err != nil {
 			log.Warn("failed to register circulars tool", "error", err)
 		}
+
+		// SC Malaysia search tool
+		scTool := tools.NewSearchSCTool(retriever)
+		if err := toolRegistry.Register(scTool); err != nil {
+			log.Warn("failed to register SC tool", "error", err)
+		}
+
+		// IIFA (Majma Fiqh) search tool
+		iifaTool := tools.NewSearchIIFATool(retriever)
+		if err := toolRegistry.Register(iifaTool); err != nil {
+			log.Warn("failed to register IIFA tool", "error", err)
+		}
+
+		// State Fatwa search tool
+		fatwaTool := tools.NewSearchFatwaTool(retriever)
+		if err := toolRegistry.Register(fatwaTool); err != nil {
+			log.Warn("failed to register Fatwa tool", "error", err)
+		}
 	}
 
 	// Initialize orchestrator config

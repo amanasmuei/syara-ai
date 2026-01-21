@@ -69,6 +69,7 @@ type IngestOptions struct {
 	Force      bool
 	Workers    int
 	SkipEmbed  bool
+	State      string // For fatwa sources: selangor, johor, penang, federal, etc.
 }
 
 func main() {
@@ -103,9 +104,21 @@ func newIngestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ingest",
 		Short: "Ingest documents from a source",
-		Long:  "Crawl, process, chunk, and embed documents from BNM or AAOIFI sources.",
+		Long:  "Crawl, process, chunk, and embed documents from various Shariah standards sources.",
 		Example: `  # Ingest from BNM website
   crawler ingest --source=bnm --category=policy-documents
+
+  # Ingest from Securities Commission Malaysia
+  crawler ingest --source=sc --category=shariah_resolutions
+
+  # Ingest from IIFA (Majma Fiqh)
+  crawler ingest --source=iifa
+
+  # Ingest state fatwa (Selangor)
+  crawler ingest --source=fatwa --state=selangor
+
+  # Ingest all state fatwas
+  crawler ingest --source=fatwa --state=all
 
   # Ingest a specific PDF file
   crawler ingest --input=/path/to/document.pdf
@@ -120,8 +133,9 @@ func newIngestCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&opts.Source, "source", "s", "", "Source to ingest: 'bnm' or 'aaoifi'")
-	cmd.Flags().StringVarP(&opts.Category, "category", "c", "", "Category filter (e.g., 'policy-documents', 'circulars')")
+	cmd.Flags().StringVarP(&opts.Source, "source", "s", "", "Source to ingest: 'bnm', 'aaoifi', 'sc', 'iifa', or 'fatwa'")
+	cmd.Flags().StringVarP(&opts.Category, "category", "c", "", "Category filter (e.g., 'policy-documents', 'circulars', 'shariah_resolutions')")
+	cmd.Flags().StringVar(&opts.State, "state", "", "State for fatwa sources (selangor, johor, penang, federal, all)")
 	cmd.Flags().StringVarP(&opts.URL, "url", "u", "", "Specific URL to ingest")
 	cmd.Flags().StringVarP(&opts.InputFile, "input", "i", "", "Input file path (for local PDF processing)")
 	cmd.Flags().StringVarP(&opts.OutputDir, "output", "o", "./data", "Output directory for processed data")
@@ -444,8 +458,14 @@ func (o *IngestionOrchestrator) IngestSource(ctx context.Context, opts *IngestOp
 		return o.ingestBNM(ctx, opts)
 	case "aaoifi":
 		return o.ingestAAOIFI(ctx, opts)
+	case "sc":
+		return o.ingestSC(ctx, opts)
+	case "iifa":
+		return o.ingestIIFA(ctx, opts)
+	case "fatwa":
+		return o.ingestFatwa(ctx, opts)
 	default:
-		return fmt.Errorf("unknown source: %s", opts.Source)
+		return fmt.Errorf("unknown source: %s (valid sources: bnm, aaoifi, sc, iifa, fatwa)", opts.Source)
 	}
 }
 
@@ -542,6 +562,310 @@ func (o *IngestionOrchestrator) ingestAAOIFI(ctx context.Context, opts *IngestOp
 
 	// Process files concurrently
 	return o.processFilesParallel(ctx, pdfFiles, "aaoifi", opts)
+}
+
+// ingestSC ingests documents from Securities Commission Malaysia website.
+func (o *IngestionOrchestrator) ingestSC(ctx context.Context, opts *IngestOptions) error {
+	o.log.Info("crawling SC Malaysia website")
+
+	// Create SC crawler
+	scCfg := crawler.DefaultSCCrawlerConfig()
+	scCfg.BaseURL = o.cfg.Crawler.SCBaseURL
+	scCfg.UserAgent = o.cfg.Crawler.UserAgent
+	scCrawler := crawler.NewSCCrawler(scCfg, o.storage, o.log)
+
+	// Crawl SC pages
+	docs, err := scCrawler.Crawl(ctx)
+	if err != nil {
+		return fmt.Errorf("SC crawl failed: %w", err)
+	}
+
+	atomic.AddInt64(&o.stats.DocumentsFound, int64(len(docs)))
+	o.log.Info("crawled SC documents", "count", len(docs))
+
+	// Create progress bar
+	bar := progressbar.NewOptions(len(docs),
+		progressbar.OptionSetDescription("Processing SC documents"),
+		progressbar.OptionShowCount(),
+	)
+
+	// Process each document
+	for _, doc := range docs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Download and process PDFs
+		for _, pdfURL := range doc.PDFLinks {
+			if err := o.processPDFFromURLWithSource(ctx, pdfURL, doc.Category, "sc", opts); err != nil {
+				o.log.WithError(err).Error("failed to process SC PDF", "url", pdfURL)
+				atomic.AddInt64(&o.stats.Errors, 1)
+				continue
+			}
+			atomic.AddInt64(&o.stats.PDFsDownloaded, 1)
+		}
+
+		atomic.AddInt64(&o.stats.DocumentsProcessed, 1)
+		bar.Add(1)
+	}
+
+	o.printStats()
+	return nil
+}
+
+// ingestIIFA ingests documents from International Islamic Fiqh Academy.
+func (o *IngestionOrchestrator) ingestIIFA(ctx context.Context, opts *IngestOptions) error {
+	o.log.Info("crawling IIFA (Majma Fiqh) website")
+
+	// Create IIFA crawler
+	iifaCfg := crawler.DefaultIIFACrawlerConfig()
+	iifaCfg.BaseURL = o.cfg.Crawler.IIFABaseURL
+	iifaCfg.UserAgent = o.cfg.Crawler.UserAgent
+	iifaCrawler := crawler.NewIIFACrawler(iifaCfg, o.storage, o.log)
+
+	// Crawl IIFA pages
+	docs, err := iifaCrawler.Crawl(ctx)
+	if err != nil {
+		return fmt.Errorf("IIFA crawl failed: %w", err)
+	}
+
+	atomic.AddInt64(&o.stats.DocumentsFound, int64(len(docs)))
+	o.log.Info("crawled IIFA documents", "count", len(docs))
+
+	// Create progress bar
+	bar := progressbar.NewOptions(len(docs),
+		progressbar.OptionSetDescription("Processing IIFA documents"),
+		progressbar.OptionShowCount(),
+	)
+
+	// Process each document
+	for _, doc := range docs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Download and process PDFs
+		for _, pdfURL := range doc.PDFLinks {
+			if err := o.processPDFFromURLWithSource(ctx, pdfURL, doc.Category, "iifa", opts); err != nil {
+				o.log.WithError(err).Error("failed to process IIFA PDF", "url", pdfURL)
+				atomic.AddInt64(&o.stats.Errors, 1)
+				continue
+			}
+			atomic.AddInt64(&o.stats.PDFsDownloaded, 1)
+		}
+
+		atomic.AddInt64(&o.stats.DocumentsProcessed, 1)
+		bar.Add(1)
+	}
+
+	o.printStats()
+	return nil
+}
+
+// ingestFatwa ingests documents from Malaysian state fatwa authorities.
+func (o *IngestionOrchestrator) ingestFatwa(ctx context.Context, opts *IngestOptions) error {
+	// Determine which states to process
+	states := getStatesToProcess(opts.State, o.cfg)
+	if len(states) == 0 {
+		return fmt.Errorf("no fatwa states configured or specified")
+	}
+
+	o.log.Info("crawling state fatwa portals", "states", len(states))
+
+	var totalDocs int64
+	for _, state := range states {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		baseURL := getFatwaBaseURL(state, o.cfg)
+		if baseURL == "" {
+			o.log.Warn("no URL configured for state fatwa", "state", state)
+			continue
+		}
+
+		o.log.Info("crawling state fatwa", "state", state, "url", baseURL)
+
+		// Create fatwa crawler for this state
+		fatwaCfg := crawler.DefaultFatwaCrawlerConfig(crawler.FatwaState(state), baseURL)
+		fatwaCfg.UserAgent = o.cfg.Crawler.UserAgent
+		fatwaCrawler := crawler.NewFatwaCrawler(fatwaCfg, o.storage, o.log)
+
+		// Crawl fatwa pages
+		docs, err := fatwaCrawler.Crawl(ctx)
+		if err != nil {
+			o.log.WithError(err).Error("failed to crawl state fatwa", "state", state)
+			atomic.AddInt64(&o.stats.Errors, 1)
+			continue
+		}
+
+		atomic.AddInt64(&o.stats.DocumentsFound, int64(len(docs)))
+		totalDocs += int64(len(docs))
+
+		// Process each document
+		for _, doc := range docs {
+			// Download and process PDFs
+			for _, pdfURL := range doc.PDFLinks {
+				sourceType := fmt.Sprintf("fatwa_%s", state)
+				if err := o.processPDFFromURLWithSource(ctx, pdfURL, doc.Category, sourceType, opts); err != nil {
+					o.log.WithError(err).Error("failed to process fatwa PDF", "state", state, "url", pdfURL)
+					atomic.AddInt64(&o.stats.Errors, 1)
+					continue
+				}
+				atomic.AddInt64(&o.stats.PDFsDownloaded, 1)
+			}
+			atomic.AddInt64(&o.stats.DocumentsProcessed, 1)
+		}
+	}
+
+	o.log.Info("completed fatwa ingestion", "total_documents", totalDocs)
+	o.printStats()
+	return nil
+}
+
+// getStatesToProcess returns the list of states to process based on the option.
+func getStatesToProcess(stateOpt string, cfg *config.Config) []string {
+	if stateOpt == "" || stateOpt == "all" {
+		// Return all configured states
+		var states []string
+		if cfg.Crawler.FatwaSelangorURL != "" {
+			states = append(states, "selangor")
+		}
+		if cfg.Crawler.FatwaJohorURL != "" {
+			states = append(states, "johor")
+		}
+		if cfg.Crawler.FatwaPenangURL != "" {
+			states = append(states, "penang")
+		}
+		if cfg.Crawler.FatwaFederalURL != "" {
+			states = append(states, "federal")
+		}
+		if cfg.Crawler.FatwaPerakURL != "" {
+			states = append(states, "perak")
+		}
+		if cfg.Crawler.FatwaKedahURL != "" {
+			states = append(states, "kedah")
+		}
+		if cfg.Crawler.FatwaKelantanURL != "" {
+			states = append(states, "kelantan")
+		}
+		if cfg.Crawler.FatwaTerengganuURL != "" {
+			states = append(states, "terengganu")
+		}
+		if cfg.Crawler.FatwaPahangURL != "" {
+			states = append(states, "pahang")
+		}
+		if cfg.Crawler.FatwaNSembilanURL != "" {
+			states = append(states, "nsembilan")
+		}
+		if cfg.Crawler.FatwaMelakaURL != "" {
+			states = append(states, "melaka")
+		}
+		if cfg.Crawler.FatwaPerlisURL != "" {
+			states = append(states, "perlis")
+		}
+		if cfg.Crawler.FatwaSabahURL != "" {
+			states = append(states, "sabah")
+		}
+		if cfg.Crawler.FatwaSarawakURL != "" {
+			states = append(states, "sarawak")
+		}
+		return states
+	}
+	return []string{stateOpt}
+}
+
+// getFatwaBaseURL returns the base URL for a given state from config.
+func getFatwaBaseURL(state string, cfg *config.Config) string {
+	switch state {
+	case "selangor":
+		return cfg.Crawler.FatwaSelangorURL
+	case "johor":
+		return cfg.Crawler.FatwaJohorURL
+	case "penang":
+		return cfg.Crawler.FatwaPenangURL
+	case "federal":
+		return cfg.Crawler.FatwaFederalURL
+	case "perak":
+		return cfg.Crawler.FatwaPerakURL
+	case "kedah":
+		return cfg.Crawler.FatwaKedahURL
+	case "kelantan":
+		return cfg.Crawler.FatwaKelantanURL
+	case "terengganu":
+		return cfg.Crawler.FatwaTerengganuURL
+	case "pahang":
+		return cfg.Crawler.FatwaPahangURL
+	case "nsembilan":
+		return cfg.Crawler.FatwaNSembilanURL
+	case "melaka":
+		return cfg.Crawler.FatwaMelakaURL
+	case "perlis":
+		return cfg.Crawler.FatwaPerlisURL
+	case "sabah":
+		return cfg.Crawler.FatwaSabahURL
+	case "sarawak":
+		return cfg.Crawler.FatwaSarawakURL
+	default:
+		return ""
+	}
+}
+
+// processPDFFromURLWithSource downloads and processes a PDF with a specified source type.
+func (o *IngestionOrchestrator) processPDFFromURLWithSource(ctx context.Context, pdfURL, category, sourceType string, opts *IngestOptions) error {
+	// Download PDF using the BNM crawler's download method (it's generic enough)
+	data, err := o.crawler.DownloadPDF(ctx, pdfURL)
+	if err != nil {
+		return fmt.Errorf("failed to download PDF: %w", err)
+	}
+
+	// Create temporary file
+	tmpFile, err := os.CreateTemp("", "shariacomply-*.pdf")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	// Process the PDF
+	metadata := processor.DocumentMetadata{
+		ID:         uuid.New().String(),
+		SourceType: sourceType,
+		Category:   category,
+		FileName:   filepath.Base(pdfURL),
+	}
+
+	doc, err := o.pdfProc.ProcessPDF(ctx, tmpFile.Name(), metadata)
+	if err != nil {
+		return fmt.Errorf("failed to process PDF: %w", err)
+	}
+
+	atomic.AddInt64(&o.stats.PagesProcessed, int64(doc.TotalPages))
+
+	// Chunk content
+	chunks := o.chunkDocument(doc)
+	atomic.AddInt64(&o.stats.ChunksCreated, int64(len(chunks)))
+
+	// Generate embeddings
+	if !opts.SkipEmbed && o.embedder != nil {
+		if err := o.generateEmbeddings(ctx, chunks); err != nil {
+			o.log.WithError(err).Warn("failed to generate embeddings")
+		} else {
+			atomic.AddInt64(&o.stats.EmbeddingsGenerated, int64(len(chunks)))
+		}
+	}
+
+	return nil
 }
 
 // IngestFile ingests a single file.

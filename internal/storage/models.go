@@ -11,22 +11,25 @@ import (
 
 // Document represents a source document (PDF, web page).
 type Document struct {
-	ID             uuid.UUID       `json:"id" db:"id"`
-	SourceType     string          `json:"source_type" db:"source_type"`
-	Title          string          `json:"title" db:"title"`
-	FileName       sql.NullString  `json:"file_name" db:"file_name"`
-	FilePath       sql.NullString  `json:"file_path" db:"file_path"`
-	OriginalURL    sql.NullString  `json:"original_url" db:"original_url"`
-	Category       sql.NullString  `json:"category" db:"category"`
-	StandardNumber sql.NullString  `json:"standard_number" db:"standard_number"`
-	EffectiveDate  sql.NullTime    `json:"effective_date" db:"effective_date"`
-	ContentHash    sql.NullString  `json:"content_hash" db:"content_hash"`
-	TotalPages     sql.NullInt32   `json:"total_pages" db:"total_pages"`
-	Language       string          `json:"language" db:"language"`
-	Metadata       json.RawMessage `json:"metadata" db:"metadata"`
-	IsActive       bool            `json:"is_active" db:"is_active"`
-	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at" db:"updated_at"`
+	ID               uuid.UUID       `json:"id" db:"id"`
+	SourceType       string          `json:"source_type" db:"source_type"`
+	Title            string          `json:"title" db:"title"`
+	FileName         sql.NullString  `json:"file_name" db:"file_name"`
+	FilePath         sql.NullString  `json:"file_path" db:"file_path"`
+	OriginalURL      sql.NullString  `json:"original_url" db:"original_url"`
+	Category         sql.NullString  `json:"category" db:"category"`
+	StandardNumber   sql.NullString  `json:"standard_number" db:"standard_number"`
+	EffectiveDate    sql.NullTime    `json:"effective_date" db:"effective_date"`
+	ContentHash      sql.NullString  `json:"content_hash" db:"content_hash"`
+	TotalPages       sql.NullInt32   `json:"total_pages" db:"total_pages"`
+	Language         string          `json:"language" db:"language"`
+	Metadata         json.RawMessage `json:"metadata" db:"metadata"`
+	IsActive         bool            `json:"is_active" db:"is_active"`
+	CreatedAt        time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at" db:"updated_at"`
+	ResolutionNumber sql.NullString  `json:"resolution_number" db:"resolution_number"` // For IIFA/Majma Fiqh resolutions
+	FatwaState       sql.NullString  `json:"fatwa_state" db:"fatwa_state"`             // For state fatwa sources
+	DocumentType     sql.NullString  `json:"document_type" db:"document_type"`         // acts, guidelines, resolutions, etc.
 }
 
 // Chunk represents a text chunk with embedding.
