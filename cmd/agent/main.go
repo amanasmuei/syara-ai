@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ import (
 	"github.com/alqutdigital/islamic-banking-agent/internal/api/middleware"
 	"github.com/alqutdigital/islamic-banking-agent/internal/config"
 	"github.com/alqutdigital/islamic-banking-agent/internal/embedder"
+	"github.com/alqutdigital/islamic-banking-agent/internal/llm"
 	"github.com/alqutdigital/islamic-banking-agent/internal/rag"
 	"github.com/alqutdigital/islamic-banking-agent/internal/storage"
 	"github.com/alqutdigital/islamic-banking-agent/internal/tools"
@@ -129,7 +131,7 @@ func run() error {
 	// Initialize Chat Service (AI Agent)
 	// ============================
 	var chatService handlers.ChatService
-	if cfg.LLM.AnthropicKey != "" {
+	if canInitializeLLM(cfg) {
 		chatService = initChatService(cfg, db, log)
 		if chatService != nil {
 			log.Info("chat service initialized",
@@ -138,7 +140,7 @@ func run() error {
 			)
 		}
 	} else {
-		log.Warn("chat service not initialized: ANTHROPIC_API_KEY not set")
+		log.Warn("chat service not initialized: no LLM provider configured")
 	}
 
 	// ============================
@@ -280,14 +282,64 @@ func (a *storageAdapter) Exists(ctx context.Context, path string) (bool, error) 
 // Chat Service Initialization
 // ============================
 
+// canInitializeLLM checks if we have enough configuration to initialize an LLM provider.
+func canInitializeLLM(cfg *config.Config) bool {
+	provider := strings.ToLower(cfg.LLM.Provider)
+	switch provider {
+	case "anthropic":
+		return cfg.LLM.AnthropicKey != ""
+	case "ollama", "lmstudio":
+		return true // Local providers don't require API keys
+	default:
+		return cfg.LLM.AnthropicKey != "" // Default to anthropic behavior
+	}
+}
+
+// createLLMProvider creates an LLM provider based on the configuration.
+func createLLMProvider(cfg *config.Config, log *logger.Logger) (llm.Provider, error) {
+	provider := strings.ToLower(cfg.LLM.Provider)
+
+	// Determine base URL for local providers
+	var baseURL string
+	switch provider {
+	case "ollama":
+		baseURL = cfg.LLM.OllamaBaseURL
+	case "lmstudio":
+		baseURL = cfg.LLM.LMStudioBaseURL
+	}
+
+	providerCfg := llm.ProviderConfig{
+		Provider:          provider,
+		APIKey:            cfg.LLM.AnthropicKey,
+		Model:             cfg.LLM.Model,
+		BaseURL:           baseURL,
+		MaxTokens:         cfg.LLM.MaxTokens,
+		Temperature:       cfg.LLM.Temperature,
+		EnableToolCalling: cfg.LLM.EnableToolCalling,
+	}
+
+	return llm.NewProvider(providerCfg, log.Logger)
+}
+
 // initChatService initializes the AI chat service with all dependencies.
 func initChatService(cfg *config.Config, db *storage.PostgresDB, log *logger.Logger) handlers.ChatService {
+	// Create LLM provider
+	provider, err := createLLMProvider(cfg, log)
+	if err != nil {
+		log.Error("failed to create LLM provider", "error", err)
+		return nil
+	}
+	log.Info("LLM provider created",
+		"provider", provider.Name(),
+		"model", provider.Model(),
+		"supports_tools", provider.SupportsTools(),
+	)
+
 	// Initialize embedder for RAG (requires OpenAI key)
 	var emb rag.Embedder
 	if cfg.LLM.OpenAIKey != "" {
 		embConfig := embedder.DefaultEmbedderConfig(cfg.LLM.OpenAIKey)
 		embConfig.Model = cfg.LLM.EmbeddingModel
-		var err error
 		emb, err = embedder.NewOpenAIEmbedder(embConfig, log)
 		if err != nil {
 			log.Warn("failed to initialize embedder", "error", err)
@@ -339,11 +391,12 @@ func initChatService(cfg *config.Config, db *storage.PostgresDB, log *logger.Log
 	orchConfig := agent.DefaultOrchestratorConfig()
 	orchConfig.Model = cfg.LLM.Model
 	orchConfig.MaxTokens = cfg.LLM.MaxTokens
+	orchConfig.Temperature = cfg.LLM.Temperature
 	orchConfig.InitialRetrieval = retriever != nil
 
-	// Create orchestrator
+	// Create orchestrator with provider
 	orchestrator, err := agent.NewOrchestrator(
-		cfg.LLM.AnthropicKey,
+		provider,
 		retriever,
 		toolRegistry,
 		nil, // Memory can be added later

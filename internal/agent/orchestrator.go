@@ -9,11 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alqutdigital/islamic-banking-agent/internal/llm"
 	"github.com/alqutdigital/islamic-banking-agent/internal/rag"
 	"github.com/alqutdigital/islamic-banking-agent/internal/storage"
 	"github.com/alqutdigital/islamic-banking-agent/internal/tools"
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
 )
 
@@ -94,7 +93,7 @@ type TokenUsage struct {
 
 // Orchestrator is the main AI agent orchestrator.
 type Orchestrator struct {
-	client    *anthropic.Client
+	provider  llm.Provider
 	retriever *rag.Retriever
 	tools     *tools.Registry
 	memory    *ConversationMemory
@@ -103,34 +102,30 @@ type Orchestrator struct {
 	mu        sync.RWMutex
 }
 
-// NewOrchestrator creates a new agent orchestrator.
+// NewOrchestrator creates a new agent orchestrator with a provider.
 func NewOrchestrator(
-	apiKey string,
+	provider llm.Provider,
 	retriever *rag.Retriever,
 	toolRegistry *tools.Registry,
 	memory *ConversationMemory,
 	logger *slog.Logger,
 	config OrchestratorConfig,
 ) (*Orchestrator, error) {
-	if apiKey == "" {
-		return nil, fmt.Errorf("Anthropic API key is required")
+	if provider == nil {
+		return nil, fmt.Errorf("LLM provider is required")
 	}
 
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	client := anthropic.NewClient(
-		option.WithAPIKey(apiKey),
-	)
-
 	return &Orchestrator{
-		client:    &client,
+		provider:  provider,
 		retriever: retriever,
 		tools:     toolRegistry,
 		memory:    memory,
 		config:    config,
-		logger:    logger.With("component", "orchestrator"),
+		logger:    logger.With("component", "orchestrator", "provider", provider.Name()),
 	}, nil
 }
 
@@ -141,6 +136,8 @@ func (o *Orchestrator) Process(ctx context.Context, req AgentRequest) (*AgentRes
 	o.logger.Info("processing request",
 		"conversation_id", req.ConversationID,
 		"message_length", len(req.UserMessage),
+		"provider", o.provider.Name(),
+		"model", o.provider.Model(),
 	)
 
 	// Ensure conversation exists
@@ -171,57 +168,39 @@ func (o *Orchestrator) Process(ctx context.Context, req AgentRequest) (*AgentRes
 		}
 	}
 
-	// Build messages for Claude
+	// Build messages for LLM
 	messages := o.buildMessages(history, initialChunks, req.UserMessage)
 
 	// Get tool definitions
-	var toolDefs []anthropic.ToolUnionParam
-	if o.tools != nil {
+	var toolDefs []llm.ToolDefinition
+	if o.tools != nil && o.provider.SupportsTools() {
 		for _, def := range o.tools.GetToolDefinitions() {
-			toolDefs = append(toolDefs, anthropic.ToolUnionParam{
-				OfTool: &anthropic.ToolParam{
-					Name:        def.Name,
-					Description: anthropic.String(def.Description),
-					InputSchema: anthropic.ToolInputSchemaParam{
-						Properties: def.InputSchema["properties"],
-						ExtraFields: map[string]interface{}{
-							"type":     def.InputSchema["type"],
-							"required": def.InputSchema["required"],
-						},
-					},
-				},
+			toolDefs = append(toolDefs, llm.ToolDefinition{
+				Name:        def.Name,
+				Description: def.Description,
+				InputSchema: def.InputSchema,
 			})
 		}
 	}
 
 	// Create initial request
-	msgParams := anthropic.MessageNewParams{
-		Model:     anthropic.Model(o.config.Model),
-		MaxTokens: int64(o.config.MaxTokens),
-		System: []anthropic.TextBlockParam{
-			{Text: o.config.SystemPrompt},
-		},
-		Messages: messages,
-	}
-
-	if len(toolDefs) > 0 {
-		msgParams.Tools = toolDefs
+	chatReq := llm.ChatRequest{
+		Messages:     messages,
+		SystemPrompt: o.config.SystemPrompt,
+		Tools:        toolDefs,
+		MaxTokens:    o.config.MaxTokens,
+		Temperature:  o.config.Temperature,
 	}
 
 	// Execute the agentic loop
-	response, allToolCalls, err := o.executeAgenticLoop(ctx, msgParams)
+	response, allToolCalls, err := o.executeAgenticLoop(ctx, chatReq)
 	if err != nil {
 		o.logger.Error("agent execution failed", "error", err)
 		return nil, fmt.Errorf("agent execution failed: %w", err)
 	}
 
 	// Extract text response
-	var textContent string
-	for _, block := range response.Content {
-		if block.Type == "text" {
-			textContent += block.Text
-		}
-	}
+	textContent := response.GetText()
 
 	// Build response
 	agentResponse := &AgentResponse{
@@ -231,12 +210,12 @@ func (o *Orchestrator) Process(ctx context.Context, req AgentRequest) (*AgentRes
 		ToolCalls:      allToolCalls,
 		RetrievedDocs:  initialChunks,
 		TokensUsed: TokenUsage{
-			InputTokens:  int(response.Usage.InputTokens),
-			OutputTokens: int(response.Usage.OutputTokens),
-			TotalTokens:  int(response.Usage.InputTokens + response.Usage.OutputTokens),
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+			TotalTokens:  response.Usage.TotalTokens(),
 		},
 		ProcessingTime: time.Since(startTime),
-		Model:          string(response.Model),
+		Model:          response.Model,
 	}
 
 	// Save to memory
@@ -260,7 +239,7 @@ func (o *Orchestrator) Process(ctx context.Context, req AgentRequest) (*AgentRes
 			Citations:      agentResponse.Citations,
 			ToolCalls:      allToolCalls,
 			TokensUsed:     agentResponse.TokensUsed.TotalTokens,
-			ModelUsed:      string(response.Model),
+			ModelUsed:      response.Model,
 			LatencyMs:      int(time.Since(startTime).Milliseconds()),
 			CreatedAt:      time.Now(),
 		}
@@ -281,7 +260,7 @@ func (o *Orchestrator) Process(ctx context.Context, req AgentRequest) (*AgentRes
 }
 
 // executeAgenticLoop runs the agentic loop until completion or max iterations.
-func (o *Orchestrator) executeAgenticLoop(ctx context.Context, params anthropic.MessageNewParams) (*anthropic.Message, []ToolCallInfo, error) {
+func (o *Orchestrator) executeAgenticLoop(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, []ToolCallInfo, error) {
 	var allToolCalls []ToolCallInfo
 	iteration := 0
 
@@ -291,54 +270,47 @@ func (o *Orchestrator) executeAgenticLoop(ctx context.Context, params anthropic.
 		o.logger.Debug("executing LLM call", "iteration", iteration)
 
 		// Make the API call
-		response, err := o.client.Messages.New(ctx, params)
+		response, err := o.provider.Chat(ctx, req)
 		if err != nil {
-			return nil, allToolCalls, fmt.Errorf("Claude API call failed: %w", err)
+			return nil, allToolCalls, fmt.Errorf("LLM API call failed: %w", err)
 		}
 
 		// Check for tool use
-		hasToolUse := false
-		var toolUseBlocks []anthropic.ToolUseBlock
-		for _, block := range response.Content {
-			if block.Type == "tool_use" {
-				hasToolUse = true
-				toolUseBlocks = append(toolUseBlocks, block.AsToolUse())
-			}
-		}
-
-		// If no tool use, we're done
-		if !hasToolUse || response.StopReason != "tool_use" {
+		if !response.HasToolCalls() {
 			return response, allToolCalls, nil
 		}
 
+		// Get tool calls from response
+		toolCalls := response.GetToolCalls()
+
 		// Execute tool calls
-		var toolResults []anthropic.ContentBlockParamUnion
-		for _, block := range toolUseBlocks {
+		var toolResults []llm.ToolResult
+		for _, tc := range toolCalls {
 			o.logger.Debug("executing tool",
-				"tool", block.Name,
-				"id", block.ID,
+				"tool", tc.Name,
+				"id", tc.ID,
 			)
 
 			// Track tool call
-			toolCall := ToolCallInfo{
-				ID:    block.ID,
-				Name:  block.Name,
-				Input: block.Input,
+			toolCallInfo := ToolCallInfo{
+				ID:    tc.ID,
+				Name:  tc.Name,
+				Input: tc.Input,
 			}
-			allToolCalls = append(allToolCalls, toolCall)
+			allToolCalls = append(allToolCalls, toolCallInfo)
 
 			// Execute tool
 			var resultContent string
 			var isError bool
 
 			if o.tools != nil {
-				result, err := o.tools.Execute(ctx, block.Name, block.Input)
-				if err != nil {
-					resultContent = fmt.Sprintf("Error: %v", err)
+				result, execErr := o.tools.Execute(ctx, tc.Name, tc.Input)
+				if execErr != nil {
+					resultContent = fmt.Sprintf("Error: %v", execErr)
 					isError = true
 					o.logger.Warn("tool execution failed",
-						"tool", block.Name,
-						"error", err,
+						"tool", tc.Name,
+						"error", execErr,
 					)
 				} else {
 					resultContent = result
@@ -348,64 +320,26 @@ func (o *Orchestrator) executeAgenticLoop(ctx context.Context, params anthropic.
 				isError = true
 			}
 
-			// Build tool result
-			toolResults = append(toolResults, anthropic.ContentBlockParamUnion{
-				OfToolResult: &anthropic.ToolResultBlockParam{
-					Type:      "tool_result",
-					ToolUseID: block.ID,
-					Content: []anthropic.ToolResultBlockParamContentUnion{
-						{
-							OfText: &anthropic.TextBlockParam{
-								Type: "text",
-								Text: resultContent,
-							},
-						},
-					},
-					IsError: anthropic.Bool(isError),
-				},
+			toolResults = append(toolResults, llm.ToolResult{
+				ToolUseID: tc.ID,
+				Content:   resultContent,
+				IsError:   isError,
 			})
 		}
 
-		// Build assistant message with tool use
-		var assistantContent []anthropic.ContentBlockParamUnion
-		for _, block := range response.Content {
-			if block.Type == "text" {
-				assistantContent = append(assistantContent, anthropic.ContentBlockParamUnion{
-					OfText: &anthropic.TextBlockParam{
-						Type: "text",
-						Text: block.Text,
-					},
-				})
-			} else if block.Type == "tool_use" {
-				toolUse := block.AsToolUse()
-				assistantContent = append(assistantContent, anthropic.ContentBlockParamUnion{
-					OfToolUse: &anthropic.ToolUseBlockParam{
-						Type:  "tool_use",
-						ID:    toolUse.ID,
-						Name:  toolUse.Name,
-						Input: toolUse.Input,
-					},
-				})
-			}
-		}
+		// Add assistant message with tool use to the conversation
+		req.Messages = append(req.Messages, llm.BuildAssistantMessage(response))
 
-		// Add assistant message and tool results to the conversation
-		params.Messages = append(params.Messages, anthropic.MessageParam{
-			Role:    "assistant",
-			Content: assistantContent,
-		})
-		params.Messages = append(params.Messages, anthropic.MessageParam{
-			Role:    "user",
-			Content: toolResults,
-		})
+		// Add tool results as user message
+		req.Messages = append(req.Messages, llm.BuildToolResultMessages(toolResults))
 	}
 
 	return nil, allToolCalls, fmt.Errorf("max tool calls (%d) exceeded", o.config.MaxToolCalls)
 }
 
-// buildMessages constructs the message array for Claude.
-func (o *Orchestrator) buildMessages(history []Message, chunks []storage.RetrievedChunk, userMessage string) []anthropic.MessageParam {
-	var messages []anthropic.MessageParam
+// buildMessages constructs the message array for the LLM.
+func (o *Orchestrator) buildMessages(history []Message, chunks []storage.RetrievedChunk, userMessage string) []llm.Message {
+	var messages []llm.Message
 
 	// Add conversation history
 	for _, msg := range history {
@@ -417,17 +351,7 @@ func (o *Orchestrator) buildMessages(history []Message, chunks []storage.Retriev
 			continue
 		}
 
-		messages = append(messages, anthropic.MessageParam{
-			Role: anthropic.MessageParamRole(role),
-			Content: []anthropic.ContentBlockParamUnion{
-				{
-					OfText: &anthropic.TextBlockParam{
-						Type: "text",
-						Text: msg.Content,
-					},
-				},
-			},
-		})
+		messages = append(messages, llm.NewTextMessage(llm.Role(role), msg.Content))
 	}
 
 	// Build current message with optional context
@@ -438,17 +362,7 @@ func (o *Orchestrator) buildMessages(history []Message, chunks []storage.Retriev
 		userContent = userMessage
 	}
 
-	messages = append(messages, anthropic.MessageParam{
-		Role: "user",
-		Content: []anthropic.ContentBlockParamUnion{
-			{
-				OfText: &anthropic.TextBlockParam{
-					Type: "text",
-					Text: userContent,
-				},
-			},
-		},
-	})
+	messages = append(messages, llm.NewTextMessage(llm.RoleUser, userContent))
 
 	return messages
 }
@@ -547,4 +461,9 @@ func (o *Orchestrator) UpdateConfig(config OrchestratorConfig) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.config = config
+}
+
+// Provider returns the current LLM provider.
+func (o *Orchestrator) Provider() llm.Provider {
+	return o.provider
 }

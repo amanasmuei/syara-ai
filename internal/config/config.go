@@ -64,12 +64,16 @@ type StorageConfig struct {
 
 // LLMConfig holds LLM provider configuration.
 type LLMConfig struct {
-	Provider       string
-	AnthropicKey   string
-	OpenAIKey      string
-	Model          string
-	EmbeddingModel string
-	MaxTokens      int
+	Provider          string
+	AnthropicKey      string
+	OpenAIKey         string
+	Model             string
+	EmbeddingModel    string
+	MaxTokens         int
+	OllamaBaseURL     string
+	LMStudioBaseURL   string
+	EnableToolCalling bool
+	Temperature       float64
 }
 
 // CrawlerConfig holds crawler configuration.
@@ -126,12 +130,16 @@ func Load() (*Config, error) {
 			Region:          getEnv("STORAGE_REGION", "us-east-1"),
 		},
 		LLM: LLMConfig{
-			Provider:       getEnv("LLM_PROVIDER", "anthropic"),
-			AnthropicKey:   getEnv("ANTHROPIC_API_KEY", ""),
-			OpenAIKey:      getEnv("OPENAI_API_KEY", ""),
-			Model:          getEnv("LLM_MODEL", "claude-sonnet-4-20250514"),
-			EmbeddingModel: getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
-			MaxTokens:      getEnvAsInt("LLM_MAX_TOKENS", 4096),
+			Provider:          getEnv("LLM_PROVIDER", "anthropic"),
+			AnthropicKey:      getEnv("ANTHROPIC_API_KEY", ""),
+			OpenAIKey:         getEnv("OPENAI_API_KEY", ""),
+			Model:             getEnv("LLM_MODEL", "claude-sonnet-4-20250514"),
+			EmbeddingModel:    getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
+			MaxTokens:         getEnvAsInt("LLM_MAX_TOKENS", 4096),
+			OllamaBaseURL:     getEnv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+			LMStudioBaseURL:   getEnv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1"),
+			EnableToolCalling: getEnvAsBool("LLM_ENABLE_TOOL_CALLING", true),
+			Temperature:       getEnvAsFloat("LLM_TEMPERATURE", 0.3),
 		},
 		Crawler: CrawlerConfig{
 			BNMBaseURL:     getEnv("BNM_BASE_URL", "https://www.bnm.gov.my"),
@@ -204,6 +212,15 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if boolVal, err := strconv.ParseBool(value); err == nil {
 			return boolVal
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsFloat(key string, defaultValue float64) float64 {
+	if value, exists := os.LookupEnv(key); exists {
+		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatVal
 		}
 	}
 	return defaultValue
