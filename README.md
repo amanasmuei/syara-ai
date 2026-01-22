@@ -314,4 +314,4 @@ See `.env.example` for all configuration options.
 
 ## License
 
-Copyright 2024 Alqut Digital. All rights reserved.
+Copyright 2026 KoolekLabs. All rights reserved.
