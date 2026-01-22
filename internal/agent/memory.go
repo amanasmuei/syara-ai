@@ -144,6 +144,28 @@ func (m *ConversationMemory) CreateConversation(ctx context.Context, userID *uui
 	return conv, nil
 }
 
+// EnsureConversation creates a conversation with a specific ID if it doesn't exist.
+func (m *ConversationMemory) EnsureConversation(ctx context.Context, conversationID uuid.UUID, title string) error {
+	if m.db == nil {
+		return nil
+	}
+
+	now := time.Now()
+	query := `
+		INSERT INTO conversations (id, title, is_archived, created_at, updated_at)
+		VALUES ($1, $2, false, $3, $4)
+		ON CONFLICT (id) DO NOTHING
+	`
+	_, err := m.db.ExecContext(ctx, query, conversationID, title, now, now)
+	if err != nil {
+		m.logger.Error("failed to ensure conversation", "error", err)
+		return fmt.Errorf("failed to ensure conversation: %w", err)
+	}
+
+	m.logger.Info("conversation ensured", "conversation_id", conversationID, "title", title)
+	return nil
+}
+
 // GetConversation retrieves a conversation by ID.
 func (m *ConversationMemory) GetConversation(ctx context.Context, conversationID uuid.UUID) (*Conversation, error) {
 	if m.db == nil {
@@ -340,6 +362,12 @@ func (m *ConversationMemory) SaveMessage(ctx context.Context, msg Message) error
 			m.logger.Error("failed to save message", "error", err)
 			return fmt.Errorf("failed to save message: %w", err)
 		}
+
+		// Update conversation's updated_at timestamp
+		_, _ = m.db.ExecContext(ctx,
+			`UPDATE conversations SET updated_at = $1 WHERE id = $2`,
+			time.Now(), msg.ConversationID,
+		)
 	}
 
 	// Invalidate cache

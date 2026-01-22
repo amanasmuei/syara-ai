@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -301,40 +303,189 @@ func (a *databaseAdapter) Health(ctx context.Context) error {
 	return a.db.Health(ctx)
 }
 
-// Placeholder implementations - these need to be implemented based on actual database schema
+// CreateConversation creates a new conversation in the database.
 func (a *databaseAdapter) CreateConversation(ctx context.Context, conv *handlers.Conversation) error {
-	// TODO: Implement when conversation table is ready
-	return fmt.Errorf("not implemented")
+	query := `
+		INSERT INTO conversations (id, user_id, title, is_archived, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`
+	_, err := a.db.ExecContext(ctx, query,
+		conv.ID, conv.UserID, conv.Title, conv.IsArchived, conv.CreatedAt, conv.UpdatedAt,
+	)
+	return err
 }
 
+// GetConversation retrieves a conversation by ID.
 func (a *databaseAdapter) GetConversation(ctx context.Context, id uuid.UUID) (*handlers.Conversation, error) {
-	// TODO: Implement when conversation table is ready
-	return nil, fmt.Errorf("not found")
+	query := `
+		SELECT id, user_id, title, summary, is_archived, created_at, updated_at,
+		       (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) as message_count
+		FROM conversations c
+		WHERE id = $1
+	`
+	var conv handlers.Conversation
+	var userID uuid.NullUUID
+	var summary sql.NullString
+
+	err := a.db.QueryRowContext(ctx, query, id).Scan(
+		&conv.ID, &userID, &conv.Title, &summary, &conv.IsArchived,
+		&conv.CreatedAt, &conv.UpdatedAt, &conv.MessageCount,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("conversation not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if userID.Valid {
+		conv.UserID = &userID.UUID
+	}
+	conv.Summary = summary.String
+
+	return &conv, nil
 }
 
+// UpdateConversation updates an existing conversation.
 func (a *databaseAdapter) UpdateConversation(ctx context.Context, conv *handlers.Conversation) error {
-	// TODO: Implement when conversation table is ready
-	return fmt.Errorf("not implemented")
+	query := `
+		UPDATE conversations
+		SET title = $1, summary = $2, is_archived = $3, updated_at = $4
+		WHERE id = $5
+	`
+	_, err := a.db.ExecContext(ctx, query,
+		conv.Title, conv.Summary, conv.IsArchived, conv.UpdatedAt, conv.ID,
+	)
+	return err
 }
 
+// DeleteConversation deletes a conversation and its messages.
 func (a *databaseAdapter) DeleteConversation(ctx context.Context, id uuid.UUID) error {
-	// TODO: Implement when conversation table is ready
-	return fmt.Errorf("not implemented")
+	// Delete messages first (foreign key constraint)
+	_, err := a.db.ExecContext(ctx, `DELETE FROM messages WHERE conversation_id = $1`, id)
+	if err != nil {
+		return err
+	}
+	// Delete conversation
+	_, err = a.db.ExecContext(ctx, `DELETE FROM conversations WHERE id = $1`, id)
+	return err
 }
 
+// ListConversations returns a paginated list of conversations.
 func (a *databaseAdapter) ListConversations(ctx context.Context, opts handlers.ListOptions) ([]*handlers.Conversation, int, error) {
-	// TODO: Implement when conversation table is ready
-	return []*handlers.Conversation{}, 0, nil
+	// Get total count
+	var total int
+	countQuery := `SELECT COUNT(*) FROM conversations WHERE is_archived = false`
+	if err := a.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// Get conversations with message count
+	query := `
+		SELECT c.id, c.user_id, c.title, c.summary, c.is_archived, c.created_at, c.updated_at,
+		       (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) as message_count
+		FROM conversations c
+		WHERE c.is_archived = false
+		ORDER BY c.updated_at DESC
+		LIMIT $1 OFFSET $2
+	`
+
+	rows, err := a.db.QueryContext(ctx, query, opts.Limit, opts.Offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var conversations []*handlers.Conversation
+	for rows.Next() {
+		var conv handlers.Conversation
+		var userID uuid.NullUUID
+		var summary sql.NullString
+
+		err := rows.Scan(
+			&conv.ID, &userID, &conv.Title, &summary, &conv.IsArchived,
+			&conv.CreatedAt, &conv.UpdatedAt, &conv.MessageCount,
+		)
+		if err != nil {
+			continue
+		}
+
+		if userID.Valid {
+			conv.UserID = &userID.UUID
+		}
+		conv.Summary = summary.String
+
+		conversations = append(conversations, &conv)
+	}
+
+	return conversations, total, nil
 }
 
+// CreateMessage creates a new message in the database.
 func (a *databaseAdapter) CreateMessage(ctx context.Context, msg *handlers.Message) error {
-	// TODO: Implement when message table is ready
-	return fmt.Errorf("not implemented")
+	citationsJSON, _ := json.Marshal(msg.Citations)
+
+	query := `
+		INSERT INTO messages (id, conversation_id, role, content, citations, tokens_used, model_used, latency_ms, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`
+	_, err := a.db.ExecContext(ctx, query,
+		msg.ID, msg.ConversationID, msg.Role, msg.Content, citationsJSON,
+		msg.TokensUsed, msg.ModelUsed, msg.LatencyMs, msg.CreatedAt,
+	)
+	return err
 }
 
+// GetMessages returns paginated messages for a conversation.
 func (a *databaseAdapter) GetMessages(ctx context.Context, conversationID uuid.UUID, opts handlers.ListOptions) ([]*handlers.Message, int, error) {
-	// TODO: Implement when message table is ready
-	return []*handlers.Message{}, 0, nil
+	// Get total count
+	var total int
+	countQuery := `SELECT COUNT(*) FROM messages WHERE conversation_id = $1`
+	if err := a.db.QueryRowContext(ctx, countQuery, conversationID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// Get messages
+	query := `
+		SELECT id, conversation_id, role, content, citations, tokens_used, model_used, latency_ms, created_at
+		FROM messages
+		WHERE conversation_id = $1
+		ORDER BY created_at ASC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := a.db.QueryContext(ctx, query, conversationID, opts.Limit, opts.Offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var messages []*handlers.Message
+	for rows.Next() {
+		var msg handlers.Message
+		var citationsJSON []byte
+		var tokensUsed, latencyMs sql.NullInt32
+		var modelUsed sql.NullString
+
+		err := rows.Scan(
+			&msg.ID, &msg.ConversationID, &msg.Role, &msg.Content, &citationsJSON,
+			&tokensUsed, &modelUsed, &latencyMs, &msg.CreatedAt,
+		)
+		if err != nil {
+			continue
+		}
+
+		if citationsJSON != nil {
+			_ = json.Unmarshal(citationsJSON, &msg.Citations)
+		}
+		msg.TokensUsed = int(tokensUsed.Int32)
+		msg.ModelUsed = modelUsed.String
+		msg.LatencyMs = int(latencyMs.Int32)
+
+		messages = append(messages, &msg)
+	}
+
+	return messages, total, nil
 }
 
 func (a *databaseAdapter) GetDocument(ctx context.Context, id uuid.UUID) (*handlers.Document, error) {

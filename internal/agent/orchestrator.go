@@ -161,8 +161,21 @@ func (o *Orchestrator) Process(ctx context.Context, req AgentRequest) (*AgentRes
 	)
 
 	// Ensure conversation exists
-	if req.ConversationID == uuid.Nil {
+	isNewConversation := req.ConversationID == uuid.Nil
+	if isNewConversation {
 		req.ConversationID = uuid.New()
+	}
+
+	// Create conversation record if new
+	if isNewConversation && o.memory != nil {
+		// Extract first part of message as title (max 50 chars)
+		title := req.UserMessage
+		if len(title) > 50 {
+			title = title[:47] + "..."
+		}
+		if err := o.memory.EnsureConversation(ctx, req.ConversationID, title); err != nil {
+			o.logger.Warn("failed to create conversation record", "error", err)
+		}
 	}
 
 	// Get conversation history
