@@ -223,11 +223,10 @@ func (c *BNMCrawler) CrawlPolicyDocuments(ctx context.Context) ([]CrawledDocumen
 
 // CrawlPolicyDocumentsWithFilter crawls BNM policy documents by clicking the Policy Document filter.
 // This method interacts with the page to:
-// 1. Click the "Policy Document" checkbox filter
+// 1. Click the "Policy Document" checkbox filter (using input[name="pos"][value="Policy Document"])
 // 2. Wait for the table to update
-// 3. Set entries to show maximum (100)
-// 4. Paginate through all results
-// 5. Extract document information from each row
+// 3. Paginate through all results by clicking numbered page buttons
+// 4. Extract document links from table#filta
 func (c *BNMCrawler) CrawlPolicyDocumentsWithFilter(ctx context.Context) ([]PolicyDocument, error) {
 	c.initState("bnm-policy")
 	defer c.completeState()
@@ -258,15 +257,12 @@ func (c *BNMCrawler) CrawlPolicyDocumentsWithFilter(ctx context.Context) ([]Poli
 
 	var allDocuments []PolicyDocument
 
+	// Navigate to the page and wait for initial load
 	err := chromedp.Run(browserCtx,
-		// Navigate to the page
 		chromedp.Navigate(pageURL),
 		chromedp.WaitReady("body"),
-		// Wait for Cloudflare and initial page load
+		// Wait for Cloudflare and initial page load (matching R script's Sys.sleep(5))
 		chromedp.Sleep(5*time.Second),
-		// Wait for the DataTable to be visible
-		chromedp.WaitVisible(`table.dataTable`, chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load page: %w", err)
@@ -274,149 +270,130 @@ func (c *BNMCrawler) CrawlPolicyDocumentsWithFilter(ctx context.Context) ([]Poli
 
 	c.log.Info("page loaded, clicking Policy Document filter")
 
-	// Click the Policy Document checkbox
+	// Click the Policy Document checkbox using the exact selector from the R script
+	// R script uses: input[name="pos"][value="Policy Document"]
 	err = chromedp.Run(browserCtx,
-		// Find and click the Policy Document checkbox
-		// The checkbox is in the TYPE OF DOCUMENT filter section
-		chromedp.Click(`input[type="checkbox"][value="Policy Document"]`, chromedp.ByQuery),
-		chromedp.Sleep(3*time.Second),
+		chromedp.Evaluate(`
+			var checkbox = document.querySelector('input[name="pos"][value="Policy Document"]');
+			if(checkbox && !checkbox.checked) { checkbox.click(); }
+			checkbox !== null;
+		`, nil),
+		// Wait for table to update after filter (matching R script's Sys.sleep(5))
+		chromedp.Sleep(5*time.Second),
 	)
 	if err != nil {
-		// Try alternative selector
-		c.log.Warn("primary checkbox selector failed, trying alternative", "error", err)
-		err = chromedp.Run(browserCtx,
-			chromedp.Click(`//label[contains(text(),"Policy Document")]/input`, chromedp.BySearch),
-			chromedp.Sleep(3*time.Second),
-		)
-		if err != nil {
-			// Try clicking the label text
-			err = chromedp.Run(browserCtx,
-				chromedp.Click(`//label[contains(text(),"Policy Document")]`, chromedp.BySearch),
-				chromedp.Sleep(3*time.Second),
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to click Policy Document filter: %w", err)
-			}
-		}
+		return nil, fmt.Errorf("failed to click Policy Document filter: %w", err)
 	}
 
 	c.log.Info("filter clicked, waiting for table update")
 
-	// Wait for table to update after filter
+	// Get total number of pages (R script hardcodes 12, but we'll try to detect it)
+	var totalPages int
 	err = chromedp.Run(browserCtx,
-		chromedp.WaitVisible(`table.dataTable tbody tr`, chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second),
+		chromedp.Evaluate(`
+			(function() {
+				var btns = Array.from(document.querySelectorAll('a.paginate_button'));
+				var pageNums = btns.map(b => parseInt(b.textContent.trim())).filter(n => !isNaN(n));
+				return pageNums.length > 0 ? Math.max(...pageNums) : 12;
+			})()
+		`, &totalPages),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to wait for table update: %w", err)
+	if err != nil || totalPages == 0 {
+		totalPages = 12 // fallback to R script's hardcoded value
+		c.log.Warn("could not detect total pages, using default", "total_pages", totalPages)
 	}
 
-	// Change entries dropdown to show maximum (100)
-	c.log.Info("setting entries to maximum")
-	err = chromedp.Run(browserCtx,
-		// Select maximum entries from dropdown
-		chromedp.SetValue(`select[name$="_length"]`, "100", chromedp.ByQuery),
-		chromedp.Sleep(3*time.Second),
-	)
-	if err != nil {
-		c.log.Warn("failed to set entries to 100, continuing with default", "error", err)
-	}
+	c.log.Info("detected pagination", "total_pages", totalPages)
 
-	// Now extract documents with pagination
-	for pageNum := 1; ; pageNum++ {
-		c.log.Info("extracting documents from page", "page", pageNum)
+	// Loop through all pages (matching R script approach)
+	for pageNum := 1; pageNum <= totalPages; pageNum++ {
+		c.log.Info("extracting links from page", "page", pageNum)
 
-		// Extract documents from current page
-		docs, err := c.extractTableDocuments(browserCtx, pageURL)
+		// Wait for table to render (matching R script's Sys.sleep(2))
+		err = chromedp.Run(browserCtx,
+			chromedp.Sleep(2*time.Second),
+		)
 		if err != nil {
-			c.log.WithError(err).Error("failed to extract documents from page", "page", pageNum)
+			c.log.WithError(err).Error("failed to wait for table", "page", pageNum)
 			break
 		}
 
-		if len(docs) == 0 {
-			c.log.Info("no documents found on page, stopping pagination", "page", pageNum)
+		// Extract links from table#filta (matching R script approach)
+		docs, err := c.extractTableLinks(browserCtx, pageURL)
+		if err != nil {
+			c.log.WithError(err).Error("failed to extract links from page", "page", pageNum)
 			break
 		}
 
 		allDocuments = append(allDocuments, docs...)
-		c.log.Info("extracted documents from page", "page", pageNum, "count", len(docs))
+		c.log.Info("extracted links from page", "page", pageNum, "count", len(docs))
 
-		// Check if there's a next page
-		var hasNextPage bool
-		var nextDisabled bool
-		err = chromedp.Run(browserCtx,
-			chromedp.Evaluate(`document.querySelector('.paginate_button.next') !== null`, &hasNextPage),
-			chromedp.Evaluate(`document.querySelector('.paginate_button.next.disabled') !== null`, &nextDisabled),
-		)
-		if err != nil || !hasNextPage || nextDisabled {
-			c.log.Info("no more pages available", "page", pageNum)
-			break
-		}
-
-		// Click next page
-		err = chromedp.Run(browserCtx,
-			chromedp.Click(`.paginate_button.next`, chromedp.ByQuery),
-			chromedp.Sleep(2*time.Second),
-		)
-		if err != nil {
-			c.log.WithError(err).Warn("failed to click next page", "page", pageNum)
-			break
+		// Click next page if not last (matching R script approach)
+		if pageNum < totalPages {
+			nextPage := pageNum + 1
+			err = chromedp.Run(browserCtx,
+				chromedp.Evaluate(fmt.Sprintf(`
+					(function() {
+						var btns = Array.from(document.querySelectorAll('a.paginate_button'));
+						var next = btns.find(b => b.textContent.trim() == '%d');
+						if(next) { next.click(); return true; }
+						return false;
+					})()
+				`, nextPage), nil),
+				// Wait for new page to render (matching R script's Sys.sleep(3))
+				chromedp.Sleep(3*time.Second),
+			)
+			if err != nil {
+				c.log.WithError(err).Warn("failed to click page button", "target_page", nextPage)
+				break
+			}
 		}
 	}
+
+	// Remove duplicates and empty entries
+	allDocuments = c.deduplicateDocuments(allDocuments)
 
 	c.log.Info("policy documents crawl complete", "total_documents", len(allDocuments))
 	return allDocuments, nil
 }
 
-// extractTableDocuments extracts document information from the current table page.
-func (c *BNMCrawler) extractTableDocuments(ctx context.Context, pageURL string) ([]PolicyDocument, error) {
+// extractTableLinks extracts document links from table#filta (matching R script approach).
+func (c *BNMCrawler) extractTableLinks(ctx context.Context, pageURL string) ([]PolicyDocument, error) {
 	var documents []PolicyDocument
 
-	// JavaScript to extract table data
-	var tableData []map[string]string
+	// JavaScript to extract links from table#filta tbody a (matching R script)
+	var links []string
 	err := chromedp.Run(ctx,
 		chromedp.Evaluate(`
 			(function() {
-				var rows = document.querySelectorAll('table.dataTable tbody tr');
-				var data = [];
-				rows.forEach(function(row) {
-					var cells = row.querySelectorAll('td');
-					if (cells.length >= 3) {
-						var dateCell = cells[0];
-						var titleCell = cells[1];
-						var typeCell = cells[2];
-
-						// Get the PDF link from the title cell
-						var linkElement = titleCell.querySelector('a');
-						var pdfLink = linkElement ? linkElement.getAttribute('href') : '';
-						var title = linkElement ? linkElement.textContent.trim() : titleCell.textContent.trim();
-
-						// Get type badge text
-						var typeBadge = typeCell.querySelector('.badge, span');
-						var docType = typeBadge ? typeBadge.textContent.trim() : typeCell.textContent.trim();
-
-						data.push({
-							date: dateCell.textContent.trim(),
-							title: title,
-							type: docType,
-							pdfLink: pdfLink
-						});
+				var table = document.querySelector('table#filta');
+				if(!table) return [];
+				var anchors = table.querySelectorAll('tbody a');
+				var hrefs = [];
+				anchors.forEach(function(a) {
+					var href = a.getAttribute('href');
+					if(href && href !== '') {
+						hrefs.push(href);
 					}
 				});
-				return data;
+				return hrefs;
 			})()
-		`, &tableData),
+		`, &links),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract table data: %w", err)
+		return nil, fmt.Errorf("failed to extract table links: %w", err)
 	}
 
-	for _, row := range tableData {
+	for _, link := range links {
+		if link == "" {
+			continue
+		}
+
+		// Resolve relative URLs (matching R script's normalization)
+		fullURL := c.resolveURL(link)
+
 		doc := PolicyDocument{
-			Date:    row["date"],
-			Title:   row["title"],
-			Type:    row["type"],
-			PDFLink: c.resolveURL(row["pdfLink"]),
+			PDFLink: fullURL,
 			PageURL: pageURL,
 		}
 		documents = append(documents, doc)
@@ -424,6 +401,25 @@ func (c *BNMCrawler) extractTableDocuments(ctx context.Context, pageURL string) 
 
 	return documents, nil
 }
+
+// deduplicateDocuments removes duplicate documents based on PDFLink.
+func (c *BNMCrawler) deduplicateDocuments(docs []PolicyDocument) []PolicyDocument {
+	seen := make(map[string]struct{})
+	var result []PolicyDocument
+
+	for _, doc := range docs {
+		if doc.PDFLink == "" {
+			continue
+		}
+		if _, exists := seen[doc.PDFLink]; !exists {
+			seen[doc.PDFLink] = struct{}{}
+			result = append(result, doc)
+		}
+	}
+
+	return result
+}
+
 
 // DownloadAllPolicyDocuments downloads all PDFs from the crawled policy documents.
 func (c *BNMCrawler) DownloadAllPolicyDocuments(ctx context.Context, documents []PolicyDocument) ([]string, error) {
