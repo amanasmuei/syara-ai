@@ -20,8 +20,7 @@ export function MessageBubble({ message, onCitationClick }: MessageBubbleProps) 
 
     // Replace [n] markers with clickable spans
     let content = message.content;
-    message.citations.forEach((citation, index) => {
-      const marker = `[${index + 1}]`;
+    message.citations.forEach((_citation, index) => {
       content = content.replace(
         new RegExp(`\\[${index + 1}\\]`, 'g'),
         `<citation-marker data-index="${index}">[${index + 1}]</citation-marker>`

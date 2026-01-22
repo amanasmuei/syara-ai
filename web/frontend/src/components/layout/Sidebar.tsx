@@ -118,8 +118,7 @@ export function Sidebar({
 
         <div className="p-4 border-t border-gray-200">
           <div className="text-xs text-gray-400 text-center">
-            <p>Powered by ShariaComply AI</p>
-            <p className="mt-1">BNM & AAOIFI Compliant</p>
+            <p>Powered by SyaRA - AI</p>
           </div>
         </div>
       </aside>

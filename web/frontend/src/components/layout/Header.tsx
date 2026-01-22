@@ -3,7 +3,7 @@ import { useUIStore } from '@/stores/uiStore';
 import { useChatStore } from '@/stores/chatStore';
 
 export function Header() {
-  const { theme, toggleTheme, toggleSidebar } = useUIStore();
+  const { theme, toggleTheme, toggleSidebar, toggleSettingsPanel } = useUIStore();
   const { clearChat } = useChatStore();
 
   const handleNewChat = () => {
@@ -23,10 +23,10 @@ export function Header() {
 
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
-            <span className="text-white font-bold text-sm">SC</span>
+            <span className="text-white font-bold text-sm">S</span>
           </div>
           <div className="hidden sm:block">
-            <h1 className="text-lg font-semibold text-gray-900">ShariaComply AI</h1>
+            <h1 className="text-lg font-semibold text-gray-900">SyaRA - AI</h1>
             <p className="text-xs text-gray-500">Islamic Banking Compliance Assistant</p>
           </div>
         </div>
@@ -54,6 +54,7 @@ export function Header() {
         </button>
 
         <button
+          onClick={toggleSettingsPanel}
           className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
           aria-label="Settings"
         >

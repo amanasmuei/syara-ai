@@ -37,27 +37,11 @@ export function WelcomeScreen({ onSuggestionClick }: WelcomeScreenProps) {
             <Scale className="w-10 h-10 text-primary-600" />
           </div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            ShariaComply AI
+            SyaRA - AI
           </h1>
           <p className="text-lg text-gray-600">
-            Your intelligent assistant for Islamic banking compliance
+            Transforming Islamic Banking Compliance with Verifiable Intelligence
           </p>
-        </div>
-
-        {/* Features */}
-        <div className="mb-8 flex flex-wrap justify-center gap-4 text-sm text-gray-500">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 bg-primary-500 rounded-full" />
-            <span>BNM Guidelines</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 bg-primary-500 rounded-full" />
-            <span>AAOIFI Standards</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 bg-primary-500 rounded-full" />
-            <span>Visual Citations</span>
-          </div>
         </div>
 
         {/* Suggestion Cards */}
@@ -87,7 +71,7 @@ export function WelcomeScreen({ onSuggestionClick }: WelcomeScreenProps) {
 
         {/* Disclaimer */}
         <p className="text-xs text-gray-400 mt-8">
-          Always verify compliance decisions with certified Sharia scholars. This tool provides guidance based on BNM and AAOIFI documentation.
+          Always verify compliance decisions with certified Sharia scholars. This tool provides guidance based on BNM (Bank Negara Malaysia), SC (Securities Commission Malaysia), IIFA (International Islamic Fiqh Academy), and Malaysian State Fatwa Councils.
         </p>
       </div>
     </div>

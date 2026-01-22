@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { Layout } from '@/components/layout';
 import { ChatContainer } from '@/components/chat';
 import { CitationPanel, CitationModal } from '@/components/citations';
+import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { useChatStore } from '@/stores/chatStore';
 import { useUIStore } from '@/stores/uiStore';
 import {
@@ -109,6 +110,9 @@ function App() {
         citations={allCitations}
         onNavigate={handleCitationNavigate}
       />
+
+      {/* Settings Panel */}
+      <SettingsPanel />
     </Layout>
   );
 }

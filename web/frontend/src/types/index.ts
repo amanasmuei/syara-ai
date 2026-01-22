@@ -1,4 +1,4 @@
-// Core Types for ShariaComply AI Frontend
+// Core Types for SyaRA - AI Frontend
 
 export interface Message {
   id: string;
@@ -99,3 +99,39 @@ export interface UIState {
   isCitationPanelOpen: boolean;
   theme: 'light' | 'dark';
 }
+
+// Settings Types
+export interface CrawlerSource {
+  id: string;
+  name: string;
+  type: 'bnm' | 'sc' | 'iifa' | 'fatwa';
+  baseUrl: string;
+  description: string;
+  status: 'active' | 'inactive' | 'error';
+  lastCrawled?: Date;
+  documentCount: number;
+}
+
+export interface UploadedFile {
+  id: string;
+  filename: string;
+  fileType: string;
+  fileSize: number;
+  uploadedAt: Date;
+  status: 'processing' | 'indexed' | 'failed';
+  pageCount?: number;
+  source: string;
+}
+
+export interface CrawlerJob {
+  id: string;
+  crawlerType: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  startedAt?: Date;
+  completedAt?: Date;
+  documentsProcessed: number;
+  documentsTotal: number;
+  errorMessage?: string;
+}
+
+export type SettingsTab = 'crawlers' | 'files' | 'jobs';
