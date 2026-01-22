@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 // Config holds all configuration for the application.
@@ -111,7 +113,13 @@ type LogConfig struct {
 }
 
 // Load loads configuration from environment variables.
+// It automatically loads .env and .env.local files if they exist.
 func Load() (*Config, error) {
+	// Load .env file (ignore error if file doesn't exist)
+	_ = godotenv.Load()
+	// Load .env.local for local overrides (ignore error if file doesn't exist)
+	_ = godotenv.Load(".env.local")
+
 	cfg := &Config{
 		Server: ServerConfig{
 			Port:            getEnvAsInt("PORT", 8080),
