@@ -110,7 +110,18 @@ export function useConversation(id: string | null) {
     queryFn: async () => {
       if (!id) throw new Error('No conversation ID');
       const conversation = await chatApi.getConversation(id);
-      setMessages(conversation.messages);
+
+      // Map backend message format to frontend format
+      const messages: Message[] = (conversation.messages || []).map((msg: any) => ({
+        id: msg.id,
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+        citations: msg.citations,
+        timestamp: new Date(msg.created_at),
+        isLoading: false,
+      }));
+
+      setMessages(messages);
       setConversationId(id);
       return conversation;
     },

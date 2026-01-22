@@ -1,13 +1,18 @@
 import { Menu, Plus, Settings } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useUIStore } from '@/stores/uiStore';
 import { useChatStore } from '@/stores/chatStore';
+import { chatKeys } from '@/hooks/useChat';
 
 export function Header() {
+  const queryClient = useQueryClient();
   const { toggleSidebar, toggleSettingsPanel } = useUIStore();
   const { clearChat } = useChatStore();
 
   const handleNewChat = () => {
     clearChat();
+    // Refresh conversations list to show the previous conversation in sidebar
+    queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
   };
 
   return (

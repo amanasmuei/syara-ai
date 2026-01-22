@@ -50,198 +50,95 @@ dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 cat("Starting browser session...\n")
 b <- ChromoteSession$new()
 
-# Function to wait for page load with extended JS wait
-wait_for_load <- function(session, timeout = 30) {
+# Set realistic user agent
+b$Network$setUserAgentOverride(
+  userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+# Function to get page HTML and parse with rvest
+get_page_html <- function(session, url, wait_time = 10) {
+  cat("  Fetching:", url, "\n")
+
+  session$Page$navigate(url)
   tryCatch({
-    session$Page$loadEventFired(wait_ = TRUE, timeout = timeout)
+    session$Page$loadEventFired(wait_ = TRUE, timeout = 30)
   }, error = function(e) {
-    cat("  Load event timeout, continuing...\n")
+    cat("    Load timeout, continuing...\n")
   })
-  Sys.sleep(5)  # Wait for JS rendering
+  Sys.sleep(wait_time)
 
-  # Scroll to trigger lazy loading
-  session$Runtime$evaluate("window.scrollTo(0, document.body.scrollHeight/2);")
-  Sys.sleep(2)
-  session$Runtime$evaluate("window.scrollTo(0, document.body.scrollHeight);")
-  Sys.sleep(2)
-  session$Runtime$evaluate("window.scrollTo(0, 0);")
-  Sys.sleep(1)
-}
+  # Get HTML content
+  html_result <- session$Runtime$evaluate("document.documentElement.outerHTML")
+  html_content <- html_result$result$value
 
-# Function to debug page content
-debug_page <- function(session) {
-  # Get page title
-  title <- session$Runtime$evaluate("document.title")$result$value
-  cat("  Page title:", title, "\n")
-
-  # Count all links
-  link_count <- session$Runtime$evaluate("document.querySelectorAll('a').length")$result$value
-  cat("  Total links on page:", link_count, "\n")
-
-  # Check for specific elements
-  has_pag_list <- session$Runtime$evaluate("document.querySelector('.pag-list-01') !== null")$result$value
-  cat("  Has .pag-list-01:", has_pag_list, "\n")
-
-  # Get some sample hrefs
-  sample_hrefs <- session$Runtime$evaluate("
-    Array.from(document.querySelectorAll('a')).slice(0, 20).map(a => a.href).filter(h => h.includes('download') || h.includes('.pdf'))
-  ")$result$value
-
-  if(length(sample_hrefs) > 0) {
-    cat("  Sample download links found:\n")
-    for(href in sample_hrefs) {
-      cat("    -", href, "\n")
-    }
-  }
-}
-
-# Function to extract document links from current page
-get_document_links <- function(session) {
-  # Extract all links that match download patterns
-  links_js <- session$Runtime$evaluate("
-    (function() {
-      var links = [];
-
-      // Get all anchor elements
-      var anchors = document.querySelectorAll('a');
-
-      anchors.forEach(function(a) {
-        var href = a.href || '';
-
-        // Pattern 1: download.ashx links (primary SC download pattern)
-        if(href.includes('download.ashx')) {
-          links.push(href);
-        }
-
-        // Pattern 2: PDF links
-        if(href.toLowerCase().endsWith('.pdf')) {
-          links.push(href);
-        }
-
-        // Pattern 3: documentms API
-        if(href.includes('/api/documentms/')) {
-          links.push(href);
-        }
-      });
-
-      // Also check onclick handlers for download links
-      document.querySelectorAll('[onclick*=\"download\"]').forEach(function(el) {
-        var onclick = el.getAttribute('onclick') || '';
-        var match = onclick.match(/['\"]([^'\"]*download[^'\"]*)['\"]/) ||
-                    onclick.match(/['\"]([^'\"]*\\.pdf)['\"]/) ||
-                    onclick.match(/window\\.open\\(['\"]([^'\"]+)['\"]\\)/);
-        if(match && match[1]) {
-          var url = match[1];
-          if(!url.startsWith('http')) {
-            url = window.location.origin + (url.startsWith('/') ? '' : '/') + url;
-          }
-          links.push(url);
-        }
-      });
-
-      return [...new Set(links)];
-    })()
-  ")$result$value
-
-  if(is.null(links_js) || length(links_js) == 0) return(character(0))
-  unique(unlist(links_js))
-}
-
-# Function to get all internal page links for deeper crawling
-get_page_links <- function(session, base_path) {
-  links_js <- session$Runtime$evaluate(sprintf("
-    (function() {
-      var links = [];
-      var base = '%s';
-      document.querySelectorAll('a').forEach(function(a) {
-        var href = a.href || '';
-        if(href.includes(base) && !href.includes('#') && href !== window.location.href) {
-          links.push(href);
-        }
-      });
-      return [...new Set(links)];
-    })()
-  ", base_path))$result$value
-
-  if(is.null(links_js) || length(links_js) == 0) return(character(0))
-  unique(unlist(links_js))
-}
-
-# Function to handle pagination by clicking through pages
-handle_pagination <- function(session, max_pages = 10) {
-  all_links <- c()
-  page <- 1
-
-  while(page <= max_pages) {
-    Sys.sleep(3)  # Wait for content to load
-
-    # Debug current page
-    cat("  Scanning page", page, "...\n")
-
-    page_links <- get_document_links(session)
-    new_links <- setdiff(page_links, all_links)
-    all_links <- c(all_links, page_links)
-
-    cat("    Found", length(new_links), "new links (total:", length(unique(all_links)), ")\n")
-
-    # Try to find and click next page
-    has_next <- session$Runtime$evaluate("
-      (function() {
-        // Method 1: Look for pagination with numbers
-        var paginationLinks = document.querySelectorAll('.pagination a, .xpgn a, [class*=\"paginate\"] a');
-        var currentPageNum = null;
-        var nextLink = null;
-
-        // Find current page number
-        var activeEl = document.querySelector('.pagination .active, .xpgn .active, [class*=\"current\"]');
-        if(activeEl) {
-          currentPageNum = parseInt(activeEl.textContent.trim());
-        }
-
-        // Look for next page number
-        if(currentPageNum) {
-          for(var i = 0; i < paginationLinks.length; i++) {
-            var linkNum = parseInt(paginationLinks[i].textContent.trim());
-            if(linkNum === currentPageNum + 1) {
-              paginationLinks[i].click();
-              return true;
-            }
-          }
-        }
-
-        // Method 2: Look for 'Next' button
-        var nextBtns = document.querySelectorAll('a.next, .next a, [class*=\"next\"] a, a[rel=\"next\"]');
-        for(var i = 0; i < nextBtns.length; i++) {
-          if(!nextBtns[i].classList.contains('disabled') && nextBtns[i].offsetParent !== null) {
-            nextBtns[i].click();
-            return true;
-          }
-        }
-
-        // Method 3: Look for '>' or '>>' buttons
-        var allLinks = document.querySelectorAll('.pagination a, .xpgn a');
-        for(var i = 0; i < allLinks.length; i++) {
-          var text = allLinks[i].textContent.trim();
-          if(text === '>' || text === '>>' || text === 'Next') {
-            allLinks[i].click();
-            return true;
-          }
-        }
-
-        return false;
-      })()
-    ")$result$value
-
-    if(!isTRUE(has_next)) {
-      cat("    No more pages found\n")
-      break
-    }
-
-    page <- page + 1
-    Sys.sleep(3)  # Wait for page change
+  if(is.null(html_content) || nchar(html_content) < 1000) {
+    cat("    Warning: Page content may be incomplete\n")
+    return(NULL)
   }
 
-  unique(all_links)
+  read_html(html_content)
+}
+
+# Function to extract download links from parsed HTML
+extract_download_links <- function(doc) {
+  if(is.null(doc)) return(character(0))
+
+  links <- doc %>% html_nodes("a") %>% html_attr("href")
+  links <- links[!is.na(links)]
+
+  # Filter for download patterns
+  download_links <- links[
+    grepl("download\\.ashx", links, ignore.case = TRUE) |
+    grepl("\\.pdf$", links, ignore.case = TRUE) |
+    grepl("/api/documentms/", links, ignore.case = TRUE)
+  ]
+
+  # Normalize URLs
+  download_links <- sapply(download_links, function(link) {
+    if(grepl("^https?://", link)) {
+      link
+    } else if(startsWith(link, "/")) {
+      paste0(base_url, link)
+    } else {
+      paste0(base_url, "/", link)
+    }
+  })
+
+  unique(unname(download_links))
+}
+
+# Function to extract subpage links for deeper crawling
+extract_subpage_links <- function(doc, base_path) {
+  if(is.null(doc)) return(character(0))
+
+  links <- doc %>% html_nodes("a") %>% html_attr("href")
+  links <- links[!is.na(links)]
+
+  # Remove base_url prefix for matching if present
+  base_path_clean <- gsub("^/", "", base_path)
+
+  # Filter for subpage links (match both absolute and relative paths)
+  subpage_links <- links[
+    grepl(base_path, links, ignore.case = TRUE) |
+    grepl(base_path_clean, links, ignore.case = TRUE)
+  ]
+  subpage_links <- subpage_links[!grepl("#", subpage_links)]
+  subpage_links <- subpage_links[!grepl("download\\.ashx", subpage_links)]
+  subpage_links <- subpage_links[!grepl("\\.pdf$", subpage_links, ignore.case = TRUE)]
+
+  # Normalize URLs
+  subpage_links <- sapply(subpage_links, function(link) {
+    if(grepl("^https?://", link)) {
+      link
+    } else if(startsWith(link, "/")) {
+      paste0(base_url, link)
+    } else {
+      paste0(base_url, "/", link)
+    }
+  })
+
+  # Remove duplicates and the main page itself
+  unique(unname(subpage_links))
 }
 
 all_links <- c()
@@ -253,50 +150,50 @@ for(target_name in names(target_pages)) {
   cat("\n=== Crawling", target$name, "===\n")
 
   full_url <- paste0(base_url, target$url)
-  cat("URL:", full_url, "\n")
 
-  b$Page$navigate(full_url)
-  wait_for_load(b)
+  # Get main page
+  doc <- get_page_html(b, full_url, wait_time = 10)
+  visited_pages <- c(visited_pages, full_url)
 
-  # Debug the page
-  debug_page(b)
+  if(!is.null(doc)) {
+    # Extract download links from main page
+    main_links <- extract_download_links(doc)
+    cat("  Found", length(main_links), "download links on main page\n")
+    all_links <- c(all_links, main_links)
 
-  # Get links from main page with pagination
-  section_links <- handle_pagination(b)
+    # Get subpages to crawl
+    subpages <- extract_subpage_links(doc, target$url)
+    subpages <- setdiff(subpages, visited_pages)
+    cat("  Found", length(subpages), "subpages to crawl\n")
 
-  # Also get internal page links for deeper crawling
-  internal_links <- get_page_links(b, target$url)
-  cat("Found", length(internal_links), "internal pages to crawl\n")
+    # Crawl subpages (limit to 50)
+    subpage_count <- 0
+    for(subpage in subpages) {
+      if(subpage_count >= 50) break
+      if(subpage %in% visited_pages) next
 
-  # Crawl internal pages (up to 30 per section)
-  page_count <- 0
-  for(page_link in internal_links) {
-    if(page_count >= 30) break
-    if(page_link %in% visited_pages) next
-    if(page_link == full_url) next
+      visited_pages <- c(visited_pages, subpage)
+      subpage_count <- subpage_count + 1
 
-    visited_pages <- c(visited_pages, page_link)
-    page_count <- page_count + 1
+      tryCatch({
+        sub_doc <- get_page_html(b, subpage, wait_time = 5)
 
-    tryCatch({
-      cat("  [", page_count, "/", min(30, length(internal_links)), "] Visiting:", basename(page_link), "\n")
-      b$Page$navigate(page_link)
-      wait_for_load(b)
+        if(!is.null(sub_doc)) {
+          sub_links <- extract_download_links(sub_doc)
+          new_links <- setdiff(sub_links, all_links)
 
-      page_doc_links <- get_document_links(b)
-      new_links <- setdiff(page_doc_links, section_links)
-      section_links <- c(section_links, page_doc_links)
-
-      if(length(new_links) > 0) {
-        cat("      Found", length(new_links), "new documents\n")
-      }
-    }, error = function(e) {
-      cat("      Error:", conditionMessage(e), "\n")
-    })
+          if(length(new_links) > 0) {
+            cat("    [", subpage_count, "] Found", length(new_links), "new links in", basename(subpage), "\n")
+            all_links <- c(all_links, new_links)
+          }
+        }
+      }, error = function(e) {
+        cat("    Error crawling", basename(subpage), ":", conditionMessage(e), "\n")
+      })
+    }
   }
 
-  all_links <- c(all_links, section_links)
-  cat("Section total:", length(unique(section_links)), "unique links\n")
+  cat("  Section total:", length(unique(all_links)), "unique links so far\n")
 }
 
 # Close first browser session
@@ -312,7 +209,7 @@ cat("Total unique document links found:", length(all_links), "\n")
 
 if(length(all_links) > 0) {
   cat("\nSample links:\n")
-  for(link in head(all_links, 5)) {
+  for(link in head(all_links, 10)) {
     cat("  -", link, "\n")
   }
 }
@@ -324,12 +221,6 @@ cat("\nLinks saved to:", links_file, "\n")
 # --- Download PDFs ---
 if(length(all_links) > 0) {
   cat("\nStarting PDF downloads...\n")
-  b2 <- ChromoteSession$new()
-
-  b2$Browser$setDownloadBehavior(
-    behavior = "allow",
-    downloadPath = normalizePath(output_dir)
-  )
 
   success_count <- 0
   fail_count <- 0
@@ -337,22 +228,49 @@ if(length(all_links) > 0) {
   for (i in seq_along(all_links)) {
     url <- all_links[i]
     tryCatch({
-      cat("[", i, "/", length(all_links), "] Downloading:", basename(url), "\n")
+      # Generate filename from URL
+      if(grepl("download\\.ashx\\?id=", url)) {
+        # Extract UUID from ashx URL
+        id <- sub(".*id=([^&]+).*", "\\1", url)
+        filename <- paste0("sc_doc_", id, ".pdf")
+      } else {
+        filename <- basename(url)
+        if(!grepl("\\.pdf$", filename, ignore.case = TRUE)) {
+          filename <- paste0(filename, ".pdf")
+        }
+      }
 
-      # Navigate to trigger download
-      b2$Page$navigate(url)
-      Sys.sleep(5)
+      filepath <- file.path(output_dir, filename)
 
-      success_count <- success_count + 1
+      cat("[", i, "/", length(all_links), "] Downloading:", filename, "\n")
+
+      # Use download.file with proper headers
+      download.file(
+        url = url,
+        destfile = filepath,
+        mode = "wb",
+        quiet = TRUE,
+        headers = c(
+          "User-Agent" = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
+      )
+
+      # Verify file was downloaded
+      if(file.exists(filepath) && file.size(filepath) > 0) {
+        success_count <- success_count + 1
+        cat("    Saved:", filename, "(", file.size(filepath), "bytes )\n")
+      } else {
+        fail_count <- fail_count + 1
+        cat("    Failed: Empty or missing file\n")
+      }
+
+      Sys.sleep(1)  # Rate limiting
 
     }, error = function(e) {
       cat("  Failed:", conditionMessage(e), "\n")
       fail_count <- fail_count + 1
     })
   }
-
-  # Close second browser session
-  b2$close()
 
   cat("\n=== DOWNLOAD COMPLETE ===\n")
   cat("Downloaded:", success_count, "\n")
