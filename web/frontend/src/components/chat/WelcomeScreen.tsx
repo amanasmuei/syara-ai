@@ -7,23 +7,23 @@ interface WelcomeScreenProps {
 const suggestions = [
   {
     icon: Scale,
-    title: 'Murabaha Requirements',
-    query: 'What are the key requirements for a Murabaha transaction according to BNM and AAOIFI standards?',
+    title: 'Compare Standards',
+    query: 'Compare the Murabaha requirements between BNM regulations and AAOIFI Shariah standards.',
   },
   {
     icon: BookOpen,
-    title: 'Ijara Guidelines',
-    query: 'Explain the Ijara (leasing) guidelines under AAOIFI Sharia Standards.',
+    title: 'IIFA Resolutions',
+    query: 'What are the IIFA (Majma Fiqh) resolutions on contemporary Islamic finance contracts?',
   },
   {
     icon: FileText,
-    title: 'Sukuk Compliance',
-    query: 'What are the Sharia compliance requirements for issuing Sukuk?',
+    title: 'SC Malaysia Guidelines',
+    query: 'What are the Securities Commission Malaysia requirements for Sukuk issuance?',
   },
   {
     icon: HelpCircle,
-    title: 'Musharakah vs Mudarabah',
-    query: 'What is the difference between Musharakah and Mudarabah contracts?',
+    title: 'Latest Regulations',
+    query: 'What are the latest regulatory circulars from BNM on Islamic banking?',
   },
 ];
 
@@ -37,7 +37,7 @@ export function WelcomeScreen({ onSuggestionClick }: WelcomeScreenProps) {
             SyaRA - AI
           </h1>
           <p className="text-lg text-gray-600">
-            Transforming Islamic Banking Compliance with Verifiable Intelligence
+            Your Shariah Regulatory AI Assistant for Islamic Finance Compliance
           </p>
         </div>
 
