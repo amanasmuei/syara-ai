@@ -116,8 +116,14 @@ func newIngestCmd() *cobra.Command {
   # Ingest from Securities Commission Malaysia
   crawler ingest --source=sc --category=shariah_resolutions
 
+  # Ingest from SC using R script (more reliable)
+  crawler ingest --source=sc --use-rscript
+
   # Ingest from IIFA (Majma Fiqh)
   crawler ingest --source=iifa
+
+  # Ingest from IIFA using R script (more reliable)
+  crawler ingest --source=iifa --use-rscript
 
   # Ingest state fatwa (Selangor)
   crawler ingest --source=fatwa --state=selangor
@@ -148,7 +154,7 @@ func newIngestCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&opts.Force, "force", "f", false, "Force re-processing of existing documents")
 	cmd.Flags().IntVarP(&opts.Workers, "workers", "w", 4, "Number of concurrent workers")
 	cmd.Flags().BoolVar(&opts.SkipEmbed, "skip-embed", false, "Skip embedding generation")
-	cmd.Flags().BoolVar(&opts.UseRScript, "use-rscript", false, "Use R script for BNM crawling (more reliable, requires R with chromote)")
+	cmd.Flags().BoolVar(&opts.UseRScript, "use-rscript", false, "Use R script for crawling (BNM, SC, IIFA - more reliable, requires R with chromote)")
 
 	return cmd
 }
@@ -762,10 +768,37 @@ func (o *IngestionOrchestrator) ingestSC(ctx context.Context, opts *IngestOption
 	scCfg.UserAgent = o.cfg.Crawler.UserAgent
 	scCrawler := crawler.NewSCCrawler(scCfg, o.storage, o.log)
 
-	// Crawl SC pages
-	docs, err := scCrawler.Crawl(ctx)
-	if err != nil {
-		return fmt.Errorf("SC crawl failed: %w", err)
+	var docs []crawler.CrawledDocument
+	var err error
+
+	if opts.UseRScript {
+		// Use R script for more reliable scraping
+		o.log.Info("using R script for SC crawling")
+
+		scriptPath := filepath.Join("scripts", "sc_scraper.R")
+		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+			exePath, _ := os.Executable()
+			scriptPath = filepath.Join(filepath.Dir(exePath), "..", "scripts", "sc_scraper.R")
+			if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+				return fmt.Errorf("R script not found. Expected at: scripts/sc_scraper.R")
+			}
+		}
+
+		category := opts.Category
+		if category == "" {
+			category = "all"
+		}
+
+		docs, err = scCrawler.CrawlWithRScript(ctx, scriptPath, category)
+		if err != nil {
+			return fmt.Errorf("SC R script crawl failed: %w", err)
+		}
+	} else {
+		// Crawl SC pages using Go crawler
+		docs, err = scCrawler.Crawl(ctx)
+		if err != nil {
+			return fmt.Errorf("SC crawl failed: %w", err)
+		}
 	}
 
 	atomic.AddInt64(&o.stats.DocumentsFound, int64(len(docs)))
@@ -813,10 +846,32 @@ func (o *IngestionOrchestrator) ingestIIFA(ctx context.Context, opts *IngestOpti
 	iifaCfg.UserAgent = o.cfg.Crawler.UserAgent
 	iifaCrawler := crawler.NewIIFACrawler(iifaCfg, o.storage, o.log)
 
-	// Crawl IIFA pages
-	docs, err := iifaCrawler.Crawl(ctx)
-	if err != nil {
-		return fmt.Errorf("IIFA crawl failed: %w", err)
+	var docs []crawler.CrawledDocument
+	var err error
+
+	if opts.UseRScript {
+		// Use R script for more reliable scraping
+		o.log.Info("using R script for IIFA crawling")
+
+		scriptPath := filepath.Join("scripts", "iifa_scraper.R")
+		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+			exePath, _ := os.Executable()
+			scriptPath = filepath.Join(filepath.Dir(exePath), "..", "scripts", "iifa_scraper.R")
+			if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+				return fmt.Errorf("R script not found. Expected at: scripts/iifa_scraper.R")
+			}
+		}
+
+		docs, err = iifaCrawler.CrawlWithRScript(ctx, scriptPath)
+		if err != nil {
+			return fmt.Errorf("IIFA R script crawl failed: %w", err)
+		}
+	} else {
+		// Crawl IIFA pages using Go crawler
+		docs, err = iifaCrawler.Crawl(ctx)
+		if err != nil {
+			return fmt.Errorf("IIFA crawl failed: %w", err)
+		}
 	}
 
 	atomic.AddInt64(&o.stats.DocumentsFound, int64(len(docs)))

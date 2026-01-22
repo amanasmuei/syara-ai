@@ -2,10 +2,14 @@
 package crawler
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -578,4 +582,218 @@ func (c *IIFACrawler) SetState(state *CrawlState) {
 	defer c.stateMu.Unlock()
 
 	c.state = state
+}
+
+// CrawlWithRScript uses the R script for scraping IIFA website.
+// This method is more reliable as R's chromote library handles JavaScript-heavy pages better.
+// The R script must be installed with: install.packages(c("chromote", "rvest", "stringr"))
+func (c *IIFACrawler) CrawlWithRScript(ctx context.Context, scriptPath string) ([]CrawledDocument, error) {
+	c.initState("iifa-rscript")
+	defer c.completeState()
+
+	c.log.Info("starting IIFA crawl with R script", "script", scriptPath)
+
+	// Create temp output directory
+	outputDir, err := os.MkdirTemp("", "iifa_files_*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	c.log.Info("using output directory", "dir", outputDir)
+
+	linksFile := filepath.Join(outputDir, "links.txt")
+
+	// Run the R script
+	cmd := exec.CommandContext(ctx, "Rscript", scriptPath, outputDir, linksFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	c.log.Info("executing R script", "command", cmd.String())
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("R script failed: %w", err)
+	}
+
+	c.log.Info("R script completed successfully")
+
+	// Read the links file
+	links, err := c.readLinksFile(linksFile)
+	if err != nil {
+		c.log.WithError(err).Warn("failed to read links file, scanning directory instead")
+	}
+
+	// Also read PDF-specific links file if it exists
+	pdfLinksFile := filepath.Join(outputDir, "pdf_links.txt")
+	pdfLinks, _ := c.readLinksFile(pdfLinksFile)
+	links = append(links, pdfLinks...)
+
+	// Scan the output directory for downloaded PDFs
+	pdfFiles, err := c.scanForPDFs(outputDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan for PDFs: %w", err)
+	}
+
+	c.log.Info("found downloaded PDFs", "count", len(pdfFiles), "links_count", len(links))
+
+	// Create CrawledDocument entries
+	var documents []CrawledDocument
+	for _, pdfPath := range pdfFiles {
+		filename := filepath.Base(pdfPath)
+		doc := CrawledDocument{
+			Title:     strings.TrimSuffix(filename, ".pdf"),
+			URL:       c.config.BaseURL + "/en/resolutions",
+			Category:  "resolution",
+			PDFLinks:  []string{pdfPath}, // Local path for now
+			CrawledAt: time.Now().UTC(),
+			Metadata: map[string]any{
+				"source":        "IIFA",
+				"document_type": "resolution",
+				"local_path":    pdfPath,
+			},
+		}
+		documents = append(documents, doc)
+	}
+
+	// Also add any links from the links file that weren't downloaded
+	linkSet := make(map[string]struct{})
+	for _, doc := range documents {
+		for _, link := range doc.PDFLinks {
+			linkSet[filepath.Base(link)] = struct{}{}
+		}
+	}
+	for _, link := range links {
+		filename := filepath.Base(link)
+		if _, exists := linkSet[filename]; !exists {
+			documents = append(documents, CrawledDocument{
+				Title:     strings.TrimSuffix(filename, ".pdf"),
+				URL:       link,
+				Category:  "resolution",
+				PDFLinks:  []string{link},
+				CrawledAt: time.Now().UTC(),
+				Metadata: map[string]any{
+					"source":        "IIFA",
+					"document_type": "resolution",
+				},
+			})
+		}
+	}
+
+	c.log.Info("IIFA R script crawl complete", "total_documents", len(documents))
+	return documents, nil
+}
+
+// readLinksFile reads URLs from a text file (one per line).
+func (c *IIFACrawler) readLinksFile(filePath string) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var links []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		link := strings.TrimSpace(scanner.Text())
+		if link != "" {
+			links = append(links, link)
+		}
+	}
+
+	return links, scanner.Err()
+}
+
+// scanForPDFs scans a directory for PDF files.
+func (c *IIFACrawler) scanForPDFs(dir string) ([]string, error) {
+	var pdfFiles []string
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".pdf") {
+			pdfFiles = append(pdfFiles, path)
+		}
+		return nil
+	})
+
+	return pdfFiles, err
+}
+
+// ProcessAndStoreLocalPDFs processes PDFs from local paths and stores them in object storage.
+func (c *IIFACrawler) ProcessAndStoreLocalPDFs(ctx context.Context, documents []CrawledDocument) ([]string, error) {
+	var storedPaths []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	semaphore := make(chan struct{}, 3)
+
+	for _, doc := range documents {
+		if len(doc.PDFLinks) == 0 {
+			continue
+		}
+
+		for _, pdfLink := range doc.PDFLinks {
+			wg.Add(1)
+			go func(link string) {
+				defer wg.Done()
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+
+				var path string
+				var err error
+
+				// Check if it's a local file or URL
+				if strings.HasPrefix(link, "/") || strings.HasPrefix(link, "./") || filepath.IsAbs(link) {
+					// Local file - read and upload
+					path, err = c.uploadLocalPDF(ctx, link)
+				} else if strings.HasPrefix(link, "http") {
+					// URL - download and upload
+					if err := c.rateLimiter.Wait(ctx); err != nil {
+						c.log.WithError(err).Error("rate limiter error", "url", link)
+						return
+					}
+					path, err = c.DownloadAndStorePDF(ctx, link)
+				} else {
+					// Assume it's a relative local path
+					path, err = c.uploadLocalPDF(ctx, link)
+				}
+
+				if err != nil {
+					c.log.WithError(err).Error("failed to process PDF", "link", link)
+					return
+				}
+
+				mu.Lock()
+				storedPaths = append(storedPaths, path)
+				mu.Unlock()
+
+				c.log.Info("processed PDF", "link", link, "stored_path", path)
+			}(pdfLink)
+		}
+	}
+
+	wg.Wait()
+	return storedPaths, nil
+}
+
+// uploadLocalPDF reads a local PDF file and uploads it to object storage.
+func (c *IIFACrawler) uploadLocalPDF(ctx context.Context, localPath string) (string, error) {
+	if c.storage == nil {
+		return "", fmt.Errorf("storage not configured")
+	}
+
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read local PDF: %w", err)
+	}
+
+	filename := filepath.Base(localPath)
+	storagePath := storage.BuildOriginalPath("iifa", filename)
+
+	path, err := c.storage.UploadBytes(ctx, data, storagePath, "application/pdf")
+	if err != nil {
+		return "", fmt.Errorf("failed to upload PDF to storage: %w", err)
+	}
+
+	c.log.Info("uploaded local PDF", "local", localPath, "storage", path)
+	return path, nil
 }
