@@ -59,6 +59,9 @@ tmp/
 temp/
 *.tmp
 
+# Crawler data output
+data/
+
 # Secrets
 *.pem
 *.key

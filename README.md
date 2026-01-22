@@ -206,6 +206,87 @@ islamic-banking-agent/
    npm run dev
    ```
 
+## Data Ingestion (Crawling)
+
+Before SyaRA can answer questions, you need to ingest regulatory documents into the vector database. The crawler CLI handles document fetching, PDF processing, chunking, and embedding generation.
+
+### Build the Crawler
+
+```bash
+make build-crawler
+```
+
+### Ingest from Regulatory Sources
+
+```bash
+# Ingest BNM (Bank Negara Malaysia) policy documents
+./bin/crawler ingest --source=bnm --category=policy-documents
+
+# Ingest BNM circulars
+./bin/crawler ingest --source=bnm --category=circulars
+
+# Ingest Securities Commission Malaysia Shariah resolutions
+./bin/crawler ingest --source=sc --category=shariah_resolutions
+
+# Ingest AAOIFI Shariah standards
+./bin/crawler ingest --source=aaoifi
+
+# Ingest IIFA (Majma Fiqh) resolutions
+./bin/crawler ingest --source=iifa
+
+# Ingest Malaysian state fatwa (specific state)
+./bin/crawler ingest --source=fatwa --state=selangor
+
+# Ingest all Malaysian state fatwas
+./bin/crawler ingest --source=fatwa --state=all
+```
+
+### Available Sources
+
+| Source | Flag | Description |
+|--------|------|-------------|
+| BNM | `--source=bnm` | Bank Negara Malaysia regulations |
+| SC Malaysia | `--source=sc` | Securities Commission guidelines |
+| AAOIFI | `--source=aaoifi` | International Shariah standards |
+| IIFA | `--source=iifa` | Islamic Fiqh Academy resolutions |
+| State Fatwa | `--source=fatwa --state=<state>` | Malaysian state fatwa rulings |
+
+### Additional Crawler Options
+
+```bash
+# Dry run (preview without saving)
+./bin/crawler ingest --source=bnm --dry-run
+
+# Force re-processing of existing documents
+./bin/crawler ingest --source=bnm --force
+
+# Process with more workers (faster)
+./bin/crawler ingest --source=bnm --workers=8
+
+# Skip embedding generation (process only)
+./bin/crawler ingest --source=bnm --skip-embed
+
+# Process a single local PDF file
+./bin/crawler ingest --input=/path/to/document.pdf
+
+# Process from a specific URL
+./bin/crawler ingest --url=https://example.com/document.pdf
+```
+
+### Other Crawler Commands
+
+```bash
+# Check ingestion status
+./bin/crawler status
+./bin/crawler status --source=bnm
+
+# Generate embeddings for existing documents
+./bin/crawler embed --source=bnm
+
+# Process a single PDF file
+./bin/crawler process /path/to/file.pdf
+```
+
 ## Configuration
 
 Key environment variables:

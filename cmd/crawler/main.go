@@ -265,12 +265,13 @@ func runIngest(ctx context.Context, opts *IngestOptions) error {
 	}
 
 	// Run ingestion based on options
-	if opts.InputFile != "" {
+	// If source is specified, use source-specific handler (which may use InputFile for local directory)
+	if opts.Source != "" {
+		return orchestrator.IngestSource(ctx, opts)
+	} else if opts.InputFile != "" {
 		return orchestrator.IngestFile(ctx, opts.InputFile, opts)
 	} else if opts.URL != "" {
 		return orchestrator.IngestURL(ctx, opts.URL, opts)
-	} else if opts.Source != "" {
-		return orchestrator.IngestSource(ctx, opts)
 	}
 
 	return fmt.Errorf("no source, URL, or input file specified")
@@ -477,6 +478,11 @@ func (o *IngestionOrchestrator) IngestSource(ctx context.Context, opts *IngestOp
 
 // ingestBNM ingests documents from BNM website.
 func (o *IngestionOrchestrator) ingestBNM(ctx context.Context, opts *IngestOptions) error {
+	// If input directory is provided, process local PDFs
+	if opts.InputFile != "" {
+		return o.ingestBNMFromDirectory(ctx, opts)
+	}
+
 	// Check if we should use the interactive policy document crawler
 	if opts.Category == "policy-documents" || opts.Category == "policy" {
 		return o.ingestBNMPolicyDocuments(ctx, opts)
@@ -634,6 +640,70 @@ func (o *IngestionOrchestrator) ingestBNMPolicyDocuments(ctx context.Context, op
 				"title", doc.Title,
 				"url", doc.PDFLink,
 			)
+			atomic.AddInt64(&o.stats.Errors, 1)
+		} else {
+			atomic.AddInt64(&o.stats.PDFsDownloaded, 1)
+		}
+
+		atomic.AddInt64(&o.stats.DocumentsProcessed, 1)
+		bar.Add(1)
+	}
+
+	o.printStats()
+	return nil
+}
+
+// ingestBNMFromDirectory ingests BNM documents from a local directory of PDFs.
+func (o *IngestionOrchestrator) ingestBNMFromDirectory(ctx context.Context, opts *IngestOptions) error {
+	o.log.Info("processing BNM documents from directory", "input_dir", opts.InputFile)
+
+	// Find all PDF files
+	var pdfFiles []string
+	err := filepath.Walk(opts.InputFile, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".pdf") {
+			pdfFiles = append(pdfFiles, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to scan directory: %w", err)
+	}
+
+	if len(pdfFiles) == 0 {
+		return fmt.Errorf("no PDF files found in %s", opts.InputFile)
+	}
+
+	atomic.AddInt64(&o.stats.DocumentsFound, int64(len(pdfFiles)))
+	o.log.Info("found PDF files", "count", len(pdfFiles))
+
+	// Create progress bar
+	bar := progressbar.NewOptions(len(pdfFiles),
+		progressbar.OptionSetDescription("Processing BNM documents"),
+		progressbar.OptionShowCount(),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "=",
+			SaucerHead:    ">",
+			SaucerPadding: " ",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
+
+	// Process each PDF file
+	for _, pdfPath := range pdfFiles {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		o.log.Info("processing PDF", "path", pdfPath)
+
+		if err := o.processPDFFromFileWithSource(ctx, pdfPath, "policy-documents", "bnm", opts); err != nil {
+			o.log.WithError(err).Error("failed to process PDF", "path", pdfPath)
 			atomic.AddInt64(&o.stats.Errors, 1)
 		} else {
 			atomic.AddInt64(&o.stats.PDFsDownloaded, 1)
