@@ -18,9 +18,10 @@ type ChatRequestBody struct {
 
 // ChatResponse represents the chat API response.
 type ChatResponse struct {
-	Answer    string           `json:"answer"`
-	Citations []Citation       `json:"citations"`
-	Metadata  ResponseMetadata `json:"metadata"`
+	Answer         string           `json:"answer"`
+	Citations      []Citation       `json:"citations"`
+	Metadata       ResponseMetadata `json:"metadata"`
+	ConversationID string           `json:"conversation_id"`
 }
 
 // ResponseMetadata contains metadata about the response.
@@ -158,8 +159,9 @@ func HandleChat(chatService ChatService, logger *slog.Logger) http.HandlerFunc {
 
 		// Build response
 		response := ChatResponse{
-			Answer:    result.Answer,
-			Citations: result.Citations,
+			Answer:         result.Answer,
+			Citations:      result.Citations,
+			ConversationID: result.ConversationID,
 			Metadata: ResponseMetadata{
 				ConversationID: result.ConversationID,
 				SourcesUsed:    len(result.Citations),

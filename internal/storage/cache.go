@@ -18,7 +18,7 @@ import (
 // This allows for easy mocking in tests and flexibility with Redis client implementations.
 type RedisClient interface {
 	Get(ctx context.Context, key string) (string, error)
-	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
+	Set(ctx context.Context, key string, value any, expiration time.Duration) error
 	Del(ctx context.Context, keys ...string) error
 	Keys(ctx context.Context, pattern string) ([]string, error)
 	Ping(ctx context.Context) error

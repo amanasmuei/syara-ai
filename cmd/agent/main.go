@@ -179,11 +179,52 @@ func run() error {
 	rateLimitStore := middleware.NewMemoryRateLimitStore()
 
 	// ============================
+	// Initialize Redis Client
+	// ============================
+	var redisClient storage.RedisClient
+	if cfg.Redis.Host != "" {
+		redisConfig := storage.RedisConfig{
+			Host:     cfg.Redis.Host,
+			Port:     cfg.Redis.Port,
+			Password: cfg.Redis.Password,
+			DB:       cfg.Redis.DB,
+		}
+
+		var redisErr error
+		redisClient, redisErr = storage.NewRedisClient(redisConfig)
+		if redisErr != nil {
+			log.Warn("failed to connect to Redis, conversation caching disabled", "error", redisErr)
+		} else {
+			log.Info("connected to Redis",
+				"host", cfg.Redis.Host,
+				"port", cfg.Redis.Port,
+			)
+			shutdownHandler.RegisterNamed("redis", func(ctx context.Context) error {
+				return redisClient.Close()
+			})
+		}
+	}
+
+	// ============================
+	// Initialize Conversation Memory
+	// ============================
+	var convMemory *agent.ConversationMemory
+	if db != nil {
+		memoryConfig := agent.DefaultMemoryConfig()
+		memoryConfig.EnableCache = redisClient != nil
+		convMemory = agent.NewConversationMemory(db, redisClient, log.Logger, memoryConfig)
+		log.Info("conversation memory initialized",
+			"max_history", memoryConfig.MaxHistoryMessages,
+			"cache_enabled", memoryConfig.EnableCache,
+		)
+	}
+
+	// ============================
 	// Initialize Chat Service (AI Agent)
 	// ============================
 	var chatService handlers.ChatService
 	if canInitializeLLM(cfg) {
-		chatService = initChatService(cfg, db, log)
+		chatService = initChatService(cfg, db, convMemory, log)
 		if chatService != nil {
 			log.Info("chat service initialized",
 				"model", cfg.LLM.Model,
@@ -380,7 +421,7 @@ func createLLMProvider(cfg *config.Config, log *logger.Logger) (llm.Provider, er
 }
 
 // initChatService initializes the AI chat service with all dependencies.
-func initChatService(cfg *config.Config, db *storage.PostgresDB, log *logger.Logger) handlers.ChatService {
+func initChatService(cfg *config.Config, db *storage.PostgresDB, memory *agent.ConversationMemory, log *logger.Logger) handlers.ChatService {
 	// Create LLM provider
 	provider, err := createLLMProvider(cfg, log)
 	if err != nil {
@@ -475,7 +516,7 @@ func initChatService(cfg *config.Config, db *storage.PostgresDB, log *logger.Log
 		provider,
 		retriever,
 		toolRegistry,
-		nil, // Memory can be added later
+		memory,
 		log.Logger,
 		orchConfig,
 	)
