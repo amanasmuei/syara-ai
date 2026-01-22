@@ -31,11 +31,8 @@ export function WelcomeScreen({ onSuggestionClick }: WelcomeScreenProps) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8">
       <div className="max-w-2xl w-full text-center">
-        {/* Logo and Title */}
+        {/* Title */}
         <div className="mb-8">
-          <div className="w-20 h-20 bg-primary-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <Scale className="w-10 h-10 text-primary-600" />
-          </div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
             SyaRA - AI
           </h1>

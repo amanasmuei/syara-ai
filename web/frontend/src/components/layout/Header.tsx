@@ -1,9 +1,9 @@
-import { Menu, Plus, Settings, Moon, Sun } from 'lucide-react';
+import { Menu, Plus, Settings } from 'lucide-react';
 import { useUIStore } from '@/stores/uiStore';
 import { useChatStore } from '@/stores/chatStore';
 
 export function Header() {
-  const { theme, toggleTheme, toggleSidebar, toggleSettingsPanel } = useUIStore();
+  const { toggleSidebar, toggleSettingsPanel } = useUIStore();
   const { clearChat } = useChatStore();
 
   const handleNewChat = () => {
@@ -27,7 +27,6 @@ export function Header() {
           </div>
           <div className="hidden sm:block">
             <h1 className="text-lg font-semibold text-gray-900">SyaRA - AI</h1>
-            <p className="text-xs text-gray-500">Islamic Banking Compliance Assistant</p>
           </div>
         </div>
       </div>
@@ -39,18 +38,6 @@ export function Header() {
         >
           <Plus className="w-4 h-4" />
           <span className="hidden sm:inline">New Chat</span>
-        </button>
-
-        <button
-          onClick={toggleTheme}
-          className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-          aria-label="Toggle theme"
-        >
-          {theme === 'light' ? (
-            <Moon className="w-5 h-5 text-gray-600" />
-          ) : (
-            <Sun className="w-5 h-5 text-gray-600" />
-          )}
         </button>
 
         <button

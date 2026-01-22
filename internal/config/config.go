@@ -67,6 +67,7 @@ type LLMConfig struct {
 	Provider          string
 	AnthropicKey      string
 	OpenAIKey         string
+	OpenAIBaseURL     string
 	Model             string
 	EmbeddingModel    string
 	MaxTokens         int
@@ -149,6 +150,7 @@ func Load() (*Config, error) {
 			Provider:          getEnv("LLM_PROVIDER", "anthropic"),
 			AnthropicKey:      getEnv("ANTHROPIC_API_KEY", ""),
 			OpenAIKey:         getEnv("OPENAI_API_KEY", ""),
+			OpenAIBaseURL:     getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
 			Model:             getEnv("LLM_MODEL", "claude-sonnet-4-20250514"),
 			EmbeddingModel:    getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
 			MaxTokens:         getEnvAsInt("LLM_MAX_TOKENS", 4096),

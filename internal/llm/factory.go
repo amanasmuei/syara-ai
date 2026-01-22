@@ -11,6 +11,7 @@ type ProviderType string
 
 const (
 	ProviderAnthropic ProviderType = "anthropic"
+	ProviderOpenAI    ProviderType = "openai"
 	ProviderOllama    ProviderType = "ollama"
 	ProviderLMStudio  ProviderType = "lmstudio"
 )
@@ -31,6 +32,12 @@ func NewProvider(cfg ProviderConfig, logger *slog.Logger) (Provider, error) {
 	switch providerType {
 	case ProviderAnthropic:
 		return NewAnthropicProvider(cfg, logger)
+
+	case ProviderOpenAI:
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = "https://api.openai.com/v1"
+		}
+		return NewOpenAICompatProvider(cfg, logger)
 
 	case ProviderOllama:
 		if cfg.BaseURL == "" {
@@ -97,6 +104,11 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 			return fmt.Errorf("API key is required for Anthropic provider")
 		}
 
+	case ProviderOpenAI:
+		if cfg.APIKey == "" {
+			return fmt.Errorf("API key is required for OpenAI provider")
+		}
+
 	case ProviderOllama, ProviderLMStudio:
 		// Base URL is optional (defaults are used)
 		// No API key required
@@ -113,6 +125,8 @@ func GetDefaultModel(provider string) string {
 	switch ProviderType(strings.ToLower(provider)) {
 	case ProviderAnthropic:
 		return "claude-sonnet-4-20250514"
+	case ProviderOpenAI:
+		return "gpt-4o-mini"
 	case ProviderOllama:
 		return "llama3.2"
 	case ProviderLMStudio:
@@ -125,6 +139,8 @@ func GetDefaultModel(provider string) string {
 // GetDefaultBaseURL returns the default base URL for a given provider.
 func GetDefaultBaseURL(provider string) string {
 	switch ProviderType(strings.ToLower(provider)) {
+	case ProviderOpenAI:
+		return "https://api.openai.com/v1"
 	case ProviderOllama:
 		return "http://localhost:11434/v1"
 	case ProviderLMStudio:
