@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -616,9 +617,20 @@ func (o *IngestionOrchestrator) ingestBNMPolicyDocuments(ctx context.Context, op
 			"url", doc.PDFLink,
 		)
 
-		// Download and process the PDF
-		if err := o.processPDFFromURLWithSource(ctx, doc.PDFLink, "policy-documents", "bnm", opts); err != nil {
-			o.log.WithError(err).Error("failed to process policy document PDF",
+		// Check if this is a local file or a URL
+		isLocalFile := strings.HasPrefix(doc.PDFLink, "/") || strings.HasPrefix(doc.PDFLink, "./")
+
+		var processErr error
+		if isLocalFile {
+			// Process local file directly
+			processErr = o.processPDFFromFileWithSource(ctx, doc.PDFLink, "policy-documents", "bnm", opts)
+		} else {
+			// Download and process the PDF from URL
+			processErr = o.processPDFFromURLWithSource(ctx, doc.PDFLink, "policy-documents", "bnm", opts)
+		}
+
+		if processErr != nil {
+			o.log.WithError(processErr).Error("failed to process policy document PDF",
 				"title", doc.Title,
 				"url", doc.PDFLink,
 			)
@@ -952,6 +964,50 @@ func (o *IngestionOrchestrator) processPDFFromURLWithSource(ctx context.Context,
 	}
 
 	doc, err := o.pdfProc.ProcessPDF(ctx, tmpFile.Name(), metadata)
+	if err != nil {
+		return fmt.Errorf("failed to process PDF: %w", err)
+	}
+
+	atomic.AddInt64(&o.stats.PagesProcessed, int64(doc.TotalPages))
+
+	// Chunk content
+	chunks := o.chunkDocument(doc)
+	atomic.AddInt64(&o.stats.ChunksCreated, int64(len(chunks)))
+
+	// Generate embeddings
+	if !opts.SkipEmbed && o.embedder != nil {
+		if err := o.generateEmbeddings(ctx, chunks); err != nil {
+			o.log.WithError(err).Warn("failed to generate embeddings")
+		} else {
+			atomic.AddInt64(&o.stats.EmbeddingsGenerated, int64(len(chunks)))
+		}
+	}
+
+	return nil
+}
+
+// processPDFFromFileWithSource processes a local PDF file with a specified source type.
+func (o *IngestionOrchestrator) processPDFFromFileWithSource(ctx context.Context, filePath, category, sourceType string, opts *IngestOptions) error {
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return fmt.Errorf("file not found: %s", filePath)
+	}
+
+	// Check if it's a PDF file
+	if !strings.HasSuffix(strings.ToLower(filePath), ".pdf") {
+		o.log.Debug("skipping non-PDF file", "path", filePath)
+		return nil
+	}
+
+	// Process the PDF
+	metadata := processor.DocumentMetadata{
+		ID:         uuid.New().String(),
+		SourceType: sourceType,
+		Category:   category,
+		FileName:   filepath.Base(filePath),
+	}
+
+	doc, err := o.pdfProc.ProcessPDF(ctx, filePath, metadata)
 	if err != nil {
 		return fmt.Errorf("failed to process PDF: %w", err)
 	}
