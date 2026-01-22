@@ -50,9 +50,9 @@ export interface DownloadLinks {
 export interface Conversation {
   id: string;
   title: string;
-  messages: Message[];
-  created_at: Date;
-  updated_at: Date;
+  messages?: Message[];
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
 export interface ChatRequest {
