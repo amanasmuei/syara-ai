@@ -351,18 +351,24 @@ func canInitializeLLM(cfg *config.Config) bool {
 func createLLMProvider(cfg *config.Config, log *logger.Logger) (llm.Provider, error) {
 	provider := strings.ToLower(cfg.LLM.Provider)
 
-	// Determine base URL for local providers
+	// Determine base URL and API key based on provider
 	var baseURL string
+	var apiKey string
 	switch provider {
+	case "openai":
+		baseURL = cfg.LLM.OpenAIBaseURL
+		apiKey = cfg.LLM.OpenAIKey
 	case "ollama":
 		baseURL = cfg.LLM.OllamaBaseURL
 	case "lmstudio":
 		baseURL = cfg.LLM.LMStudioBaseURL
+	default:
+		apiKey = cfg.LLM.AnthropicKey
 	}
 
 	providerCfg := llm.ProviderConfig{
 		Provider:          provider,
-		APIKey:            cfg.LLM.AnthropicKey,
+		APIKey:            apiKey,
 		Model:             cfg.LLM.Model,
 		BaseURL:           baseURL,
 		MaxTokens:         cfg.LLM.MaxTokens,
