@@ -70,6 +70,7 @@ type IngestOptions struct {
 	Workers    int
 	SkipEmbed  bool
 	State      string // For fatwa sources: selangor, johor, penang, federal, etc.
+	UseRScript bool   // Use R script for BNM crawling (more reliable)
 }
 
 func main() {
@@ -108,6 +109,9 @@ func newIngestCmd() *cobra.Command {
 		Example: `  # Ingest from BNM website
   crawler ingest --source=bnm --category=policy-documents
 
+  # Ingest from BNM using R script (more reliable)
+  crawler ingest --source=bnm --category=policy-documents --use-rscript
+
   # Ingest from Securities Commission Malaysia
   crawler ingest --source=sc --category=shariah_resolutions
 
@@ -143,6 +147,7 @@ func newIngestCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&opts.Force, "force", "f", false, "Force re-processing of existing documents")
 	cmd.Flags().IntVarP(&opts.Workers, "workers", "w", 4, "Number of concurrent workers")
 	cmd.Flags().BoolVar(&opts.SkipEmbed, "skip-embed", false, "Skip embedding generation")
+	cmd.Flags().BoolVar(&opts.UseRScript, "use-rscript", false, "Use R script for BNM crawling (more reliable, requires R with chromote)")
 
 	return cmd
 }
@@ -538,12 +543,35 @@ func (o *IngestionOrchestrator) ingestBNM(ctx context.Context, opts *IngestOptio
 // This method clicks the "Policy Document" filter checkbox, waits for AJAX update,
 // and paginates through all results to extract document information.
 func (o *IngestionOrchestrator) ingestBNMPolicyDocuments(ctx context.Context, opts *IngestOptions) error {
-	o.log.Info("crawling BNM policy documents with filter interaction")
+	var policyDocs []crawler.PolicyDocument
+	var err error
 
-	// Use the new interactive crawler
-	policyDocs, err := o.crawler.CrawlPolicyDocumentsWithFilter(ctx)
-	if err != nil {
-		return fmt.Errorf("policy documents crawl failed: %w", err)
+	if opts.UseRScript {
+		// Use R script for crawling (more reliable with Cloudflare)
+		o.log.Info("crawling BNM policy documents using R script")
+
+		// Get the script path relative to the binary or use absolute path
+		scriptPath := filepath.Join("scripts", "bnm_scraper.R")
+		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+			// Try alternative locations
+			exePath, _ := os.Executable()
+			scriptPath = filepath.Join(filepath.Dir(exePath), "..", "scripts", "bnm_scraper.R")
+			if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+				return fmt.Errorf("R script not found. Expected at: scripts/bnm_scraper.R")
+			}
+		}
+
+		policyDocs, err = o.crawler.CrawlWithRScript(ctx, scriptPath)
+		if err != nil {
+			return fmt.Errorf("R script crawl failed: %w", err)
+		}
+	} else {
+		// Use Go chromedp crawler
+		o.log.Info("crawling BNM policy documents with filter interaction")
+		policyDocs, err = o.crawler.CrawlPolicyDocumentsWithFilter(ctx)
+		if err != nil {
+			return fmt.Errorf("policy documents crawl failed: %w", err)
+		}
 	}
 
 	atomic.AddInt64(&o.stats.DocumentsFound, int64(len(policyDocs)))

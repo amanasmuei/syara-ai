@@ -2,6 +2,7 @@
 package crawler
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -490,6 +494,200 @@ func (c *BNMCrawler) extractTableLinks(ctx context.Context, pageURL string) ([]P
 	}
 
 	return documents, nil
+}
+
+// CrawlWithRScript uses the R script for scraping BNM website.
+// This method is more reliable as R's chromote library handles Cloudflare better.
+// The R script must be installed with: install.packages(c("chromote", "rvest", "stringr"))
+func (c *BNMCrawler) CrawlWithRScript(ctx context.Context, scriptPath string) ([]PolicyDocument, error) {
+	c.initState("bnm-rscript")
+	defer c.completeState()
+
+	c.log.Info("starting BNM crawl with R script", "script", scriptPath)
+
+	// Create temp output directory
+	outputDir, err := os.MkdirTemp("", "bnm_files_*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	// Don't remove the directory yet - we need the files
+	c.log.Info("using output directory", "dir", outputDir)
+
+	linksFile := filepath.Join(outputDir, "links.txt")
+
+	// Run the R script
+	cmd := exec.CommandContext(ctx, "Rscript", scriptPath, outputDir, linksFile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	c.log.Info("executing R script", "command", cmd.String())
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("R script failed: %w", err)
+	}
+
+	c.log.Info("R script completed successfully")
+
+	// Read the links file
+	links, err := c.readLinksFile(linksFile)
+	if err != nil {
+		c.log.WithError(err).Warn("failed to read links file, scanning directory instead")
+	}
+
+	// Scan the output directory for downloaded PDFs
+	pdfFiles, err := c.scanForPDFs(outputDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan for PDFs: %w", err)
+	}
+
+	c.log.Info("found downloaded PDFs", "count", len(pdfFiles), "links_count", len(links))
+
+	// Create PolicyDocument entries
+	var documents []PolicyDocument
+	for _, pdfPath := range pdfFiles {
+		filename := filepath.Base(pdfPath)
+		doc := PolicyDocument{
+			Title:   strings.TrimSuffix(filename, ".pdf"),
+			PDFLink: pdfPath, // Local path for now
+			PageURL: c.config.BaseURL + "/banking-islamic-banking",
+		}
+		documents = append(documents, doc)
+	}
+
+	// Also add any links from the links file that weren't downloaded
+	linkSet := make(map[string]struct{})
+	for _, doc := range documents {
+		linkSet[filepath.Base(doc.PDFLink)] = struct{}{}
+	}
+	for _, link := range links {
+		filename := filepath.Base(link)
+		if _, exists := linkSet[filename]; !exists {
+			documents = append(documents, PolicyDocument{
+				Title:   strings.TrimSuffix(filename, ".pdf"),
+				PDFLink: link,
+				PageURL: c.config.BaseURL + "/banking-islamic-banking",
+			})
+		}
+	}
+
+	c.log.Info("BNM R script crawl complete", "total_documents", len(documents))
+	return documents, nil
+}
+
+// readLinksFile reads URLs from a text file (one per line).
+func (c *BNMCrawler) readLinksFile(filePath string) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var links []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		link := strings.TrimSpace(scanner.Text())
+		if link != "" {
+			links = append(links, link)
+		}
+	}
+
+	return links, scanner.Err()
+}
+
+// scanForPDFs scans a directory for PDF files.
+func (c *BNMCrawler) scanForPDFs(dir string) ([]string, error) {
+	var pdfFiles []string
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".pdf") {
+			pdfFiles = append(pdfFiles, path)
+		}
+		return nil
+	})
+
+	return pdfFiles, err
+}
+
+// ProcessAndStoreLocalPDFs processes PDFs from local paths and stores them in object storage.
+func (c *BNMCrawler) ProcessAndStoreLocalPDFs(ctx context.Context, documents []PolicyDocument) ([]string, error) {
+	var storedPaths []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	semaphore := make(chan struct{}, 3)
+
+	for _, doc := range documents {
+		if doc.PDFLink == "" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(d PolicyDocument) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			var path string
+			var err error
+
+			// Check if it's a local file or URL
+			if strings.HasPrefix(d.PDFLink, "/") || strings.HasPrefix(d.PDFLink, "./") {
+				// Local file - read and upload
+				path, err = c.uploadLocalPDF(ctx, d.PDFLink)
+			} else if strings.HasPrefix(d.PDFLink, "http") {
+				// URL - download and upload
+				if err := c.rateLimiter.Wait(ctx); err != nil {
+					c.log.WithError(err).Error("rate limiter error", "url", d.PDFLink)
+					return
+				}
+				path, err = c.DownloadAndStorePDF(ctx, d.PDFLink)
+			} else {
+				// Assume it's a local path
+				path, err = c.uploadLocalPDF(ctx, d.PDFLink)
+			}
+
+			if err != nil {
+				c.log.WithError(err).Error("failed to process PDF", "link", d.PDFLink, "title", d.Title)
+				c.incrementError()
+				return
+			}
+
+			mu.Lock()
+			storedPaths = append(storedPaths, path)
+			mu.Unlock()
+
+			c.incrementSuccess()
+			c.log.Info("processed PDF", "title", d.Title, "path", path)
+		}(doc)
+	}
+
+	wg.Wait()
+	return storedPaths, nil
+}
+
+// uploadLocalPDF reads a local PDF file and uploads it to object storage.
+func (c *BNMCrawler) uploadLocalPDF(ctx context.Context, localPath string) (string, error) {
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read local PDF: %w", err)
+	}
+
+	if c.storage == nil {
+		return "", fmt.Errorf("storage not configured")
+	}
+
+	filename := filepath.Base(localPath)
+	storagePath := storage.BuildOriginalPath("bnm", filename)
+
+	path, err := c.storage.UploadBytes(ctx, data, storagePath, "application/pdf")
+	if err != nil {
+		return "", fmt.Errorf("failed to upload PDF to storage: %w", err)
+	}
+
+	return path, nil
 }
 
 // deduplicateDocuments removes duplicate documents based on PDFLink.
