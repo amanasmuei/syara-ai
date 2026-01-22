@@ -234,14 +234,31 @@ func (c *BNMCrawler) CrawlPolicyDocumentsWithFilter(ctx context.Context) ([]Poli
 	pageURL := c.config.BaseURL + "/banking-islamic-banking"
 	c.log.Info("crawling policy documents with filter", "url", pageURL)
 
-	// Create browser context with longer timeout for interactive crawling
+	// Create browser context with stealth options to bypass CloudFront WAF
+	// These options help make the headless browser appear more like a real browser
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
+		chromedp.Flag("headless", "new"), // Use new headless mode (more stealth)
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.UserAgent(c.config.UserAgent),
+		chromedp.Flag("disable-features", "IsolateOrigins,site-per-process"),
+		chromedp.Flag("disable-site-isolation-trials", true),
+		chromedp.Flag("disable-web-security", true),
+		chromedp.Flag("allow-running-insecure-content", true),
+		chromedp.Flag("disable-infobars", true),
+		chromedp.Flag("enable-features", "NetworkService,NetworkServiceInProcess"),
+		chromedp.Flag("disable-background-networking", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-sync", true),
+		chromedp.Flag("disable-translate", true),
+		chromedp.Flag("metrics-recording-only", true),
+		chromedp.Flag("mute-audio", true),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("safebrowsing-disable-auto-update", true),
+		// Use a common user agent string
+		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 		chromedp.WindowSize(1920, 1080),
 	)
 
@@ -266,6 +283,34 @@ func (c *BNMCrawler) CrawlPolicyDocumentsWithFilter(ctx context.Context) ([]Poli
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load page: %w", err)
+	}
+
+	// Debug: Check what's on the page after initial load
+	var pageDebug map[string]interface{}
+	err = chromedp.Run(browserCtx,
+		chromedp.Evaluate(`
+			(function() {
+				var info = {};
+				info.url = window.location.href;
+				info.title = document.title;
+				info.bodyLength = document.body ? document.body.innerHTML.length : 0;
+				info.hasCloudflare = document.body.innerHTML.includes('cloudflare') || document.body.innerHTML.includes('challenge');
+				info.iframeCount = document.querySelectorAll('iframe').length;
+				info.tableCount = document.querySelectorAll('table').length;
+				info.hasFilta = document.querySelector('table#filta') !== null;
+				info.hasDataTable = document.querySelector('table.dataTable') !== null;
+				// Check for the filter checkbox
+				info.hasFilterCheckbox = document.querySelector('input[name="pos"][value="Policy Document"]') !== null;
+				// Get sample of body text
+				info.bodySample = document.body ? document.body.innerText.substring(0, 500) : '';
+				return info;
+			})()
+		`, &pageDebug),
+	)
+	if err != nil {
+		c.log.WithError(err).Error("failed to get page debug info")
+	} else {
+		c.log.Info("page state after initial load", "debug", pageDebug)
 	}
 
 	c.log.Info("page loaded, clicking Policy Document filter")
@@ -361,13 +406,66 @@ func (c *BNMCrawler) CrawlPolicyDocumentsWithFilter(ctx context.Context) ([]Poli
 func (c *BNMCrawler) extractTableLinks(ctx context.Context, pageURL string) ([]PolicyDocument, error) {
 	var documents []PolicyDocument
 
-	// JavaScript to extract links from table#filta tbody a (matching R script)
-	var links []string
+	// First, debug: check what tables exist and their structure
+	var debugInfo map[string]interface{}
 	err := chromedp.Run(ctx,
 		chromedp.Evaluate(`
 			(function() {
+				var info = {};
+				// Check for table#filta
+				var filta = document.querySelector('table#filta');
+				info.hasFilta = filta !== null;
+
+				// Check for any DataTable
+				var dataTable = document.querySelector('table.dataTable');
+				info.hasDataTable = dataTable !== null;
+
+				// Get all table IDs
+				var tables = document.querySelectorAll('table');
+				info.tableIds = Array.from(tables).map(t => t.id || '(no id)');
+				info.tableCount = tables.length;
+
+				// Try to get row count from any table with tbody
+				if(filta) {
+					info.filtaRowCount = filta.querySelectorAll('tbody tr').length;
+					info.filtaLinkCount = filta.querySelectorAll('tbody a').length;
+				}
+				if(dataTable) {
+					info.dataTableRowCount = dataTable.querySelectorAll('tbody tr').length;
+					info.dataTableLinkCount = dataTable.querySelectorAll('tbody a').length;
+				}
+
+				// Get first few links from any table
+				var anyTable = filta || dataTable || tables[0];
+				if(anyTable) {
+					var links = anyTable.querySelectorAll('tbody a');
+					info.sampleLinks = Array.from(links).slice(0, 3).map(a => a.getAttribute('href'));
+				}
+
+				return info;
+			})()
+		`, &debugInfo),
+	)
+	if err != nil {
+		c.log.WithError(err).Error("failed to get debug info")
+	} else {
+		c.log.Info("table debug info", "info", debugInfo)
+	}
+
+	// JavaScript to extract links - try multiple selectors
+	var links []string
+	err = chromedp.Run(ctx,
+		chromedp.Evaluate(`
+			(function() {
+				// Try table#filta first (R script approach)
 				var table = document.querySelector('table#filta');
+				// Fallback to DataTable
+				if(!table) table = document.querySelector('table.dataTable');
+				// Fallback to first table
+				if(!table) table = document.querySelector('table');
+
 				if(!table) return [];
+
 				var anchors = table.querySelectorAll('tbody a');
 				var hrefs = [];
 				anchors.forEach(function(a) {
@@ -383,6 +481,8 @@ func (c *BNMCrawler) extractTableLinks(ctx context.Context, pageURL string) ([]P
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract table links: %w", err)
 	}
+
+	c.log.Info("extracted links", "count", len(links))
 
 	for _, link := range links {
 		if link == "" {
