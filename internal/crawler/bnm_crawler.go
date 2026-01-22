@@ -234,29 +234,19 @@ func (c *BNMCrawler) CrawlPolicyDocumentsWithFilter(ctx context.Context) ([]Poli
 	pageURL := c.config.BaseURL + "/banking-islamic-banking"
 	c.log.Info("crawling policy documents with filter", "url", pageURL)
 
-	// Create browser context with stealth options to bypass CloudFront WAF
-	// These options help make the headless browser appear more like a real browser
+	// Create browser context with options to bypass CloudFront WAF
+	// Try non-headless mode for testing (change to true for production)
+	headless := false // Set to false for debugging, true for production
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", "new"), // Use new headless mode (more stealth)
+		chromedp.Flag("headless", headless),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("disable-features", "IsolateOrigins,site-per-process"),
-		chromedp.Flag("disable-site-isolation-trials", true),
-		chromedp.Flag("disable-web-security", true),
-		chromedp.Flag("allow-running-insecure-content", true),
 		chromedp.Flag("disable-infobars", true),
-		chromedp.Flag("enable-features", "NetworkService,NetworkServiceInProcess"),
-		chromedp.Flag("disable-background-networking", true),
-		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("enable-automation", false),
 		chromedp.Flag("disable-extensions", true),
-		chromedp.Flag("disable-sync", true),
-		chromedp.Flag("disable-translate", true),
-		chromedp.Flag("metrics-recording-only", true),
-		chromedp.Flag("mute-audio", true),
 		chromedp.Flag("no-first-run", true),
-		chromedp.Flag("safebrowsing-disable-auto-update", true),
 		// Use a common user agent string
 		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 		chromedp.WindowSize(1920, 1080),
